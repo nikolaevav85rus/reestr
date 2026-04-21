@@ -1,2 +1,0 @@
-"id","amount","description","created_at","payment_date","creator_id","file_path","rejection_reason","organization_id","direction_id","budget_item_id","counterparty","contract_status","feo_note","special_order","priority","approval_status","payment_status"
-"8e9e1ccb-898a-4fb0-b3e3-dbac2e1ac129","100000","Оплата НДС","2026-04-09 15:02:29.227669","2026-04-10","3cdeceb1-46e7-4612-8200-19d5839095a1",NULL,NULL,"03123364-0d18-4c4f-b4f3-63dd94c0ec00","34eb934b-7ed7-4bb4-b7fc-3fc415a5ccd8","f9087e9d-2230-4463-8b68-1445e0fc475e","ФНС",False,"string",False,"string","DRAFT","UNPAID"
