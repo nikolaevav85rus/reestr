@@ -3,7 +3,7 @@ import dayjs from 'dayjs';
 import {
   Table, Tag, Button, Space, Typography, Card, Row, Col,
   Select, Input, Modal, Form, InputNumber, DatePicker,
-  App as AntdApp, Popconfirm, Tooltip, Divider, Upload, Switch, Segmented, Timeline, Dropdown,
+  App as AntdApp, Alert, Popconfirm, Tooltip, Divider, Upload, Switch, Segmented, Timeline, Dropdown,
 } from 'antd';
 import type { MenuProps, UploadFile } from 'antd';
 import {
@@ -23,6 +23,12 @@ import type { ColDef, ColSetting } from './ColSettingsDrawer';
 
 const { Title, Text } = Typography;
 const { RangePicker } = DatePicker;
+
+type GatePreview = {
+  allowed: boolean;
+  reason?: string | null;
+  reasons?: string[];
+};
 
 // ─── Конфиг колонок ──────────────────────────────────────────────────────────
 
@@ -291,6 +297,12 @@ const PaymentRegistry: React.FC = () => {
   const [formLoading, setFormLoading]       = useState(false);
   const [form] = Form.useForm();
   const [fileList, setFileList]             = useState<UploadFile[]>([]);
+  const [gatePreview, setGatePreview]       = useState<GatePreview | null>(null);
+  const [gatePreviewLoading, setGatePreviewLoading] = useState(false);
+  const gatePreviewSeq = useRef(0);
+  const formOrganizationId = Form.useWatch('organization_id', form);
+  const formBudgetItemId = Form.useWatch('budget_item_id', form);
+  const formPaymentDate = Form.useWatch('payment_date', form);
 
   // ─── Модалка причины ─────────────────────────────────────────────────────
   const [reasonModal, setReasonModal] = useState<{
@@ -338,6 +350,41 @@ const PaymentRegistry: React.FC = () => {
       setBudgetItems(b.data);
     });
   }, []);
+
+  useEffect(() => {
+    gatePreviewSeq.current += 1;
+    const seq = gatePreviewSeq.current;
+
+    if (!isFormOpen || !formOrganizationId || !formBudgetItemId || !formPaymentDate) {
+      setGatePreview(null);
+      setGatePreviewLoading(false);
+      return;
+    }
+
+    setGatePreviewLoading(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await apiClient.post<GatePreview>('/requests/gate_preview', {
+          organization_id: formOrganizationId,
+          budget_item_id: formBudgetItemId,
+          payment_date: formPaymentDate.format('YYYY-MM-DD'),
+        });
+        if (gatePreviewSeq.current === seq) {
+          setGatePreview(response.data);
+        }
+      } catch {
+        if (gatePreviewSeq.current === seq) {
+          setGatePreview(null);
+        }
+      } finally {
+        if (gatePreviewSeq.current === seq) {
+          setGatePreviewLoading(false);
+        }
+      }
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [isFormOpen, formOrganizationId, formBudgetItemId, formPaymentDate]);
 
   // ─── Загрузка заявок ─────────────────────────────────────────────────────
   const fetchRequests = useCallback(async () => {
@@ -1433,6 +1480,25 @@ const PaymentRegistry: React.FC = () => {
               </Form.Item>
             </Col>
           </Row>
+          {gatePreviewLoading && (
+            <Alert
+              showIcon
+              type="info"
+              message="Проверяем регламент оплаты..."
+              style={{ marginBottom: 12 }}
+            />
+          )}
+          {!gatePreviewLoading && gatePreview && (
+            <Alert
+              showIcon
+              type={gatePreview.allowed ? 'success' : 'warning'}
+              message={gatePreview.allowed ? 'Заявка разрешена' : 'Заявка требует дополнительного согласования'}
+              description={gatePreview.allowed
+                ? 'По выбранной организации, статье ДДС и дате оплаты ограничений нет.'
+                : gatePreview.reason}
+              style={{ marginBottom: 12 }}
+            />
+          )}
           <Divider style={{ margin: '12px 0' }} />
           <Form.Item name="feo_note" label="Примечание">
             <Input.TextArea rows={2} placeholder="Необязательно" />

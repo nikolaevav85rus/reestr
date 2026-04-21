@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from uuid import UUID
 from datetime import datetime, date
 from typing import Optional
@@ -66,6 +66,16 @@ class RequestUpdate(BaseModel):
 class StatusUpdate(BaseModel):
     reason: Optional[str] = None
     payment_date: Optional[str] = None
+
+class GatePreviewRequest(BaseModel):
+    payment_date: date
+    organization_id: UUID
+    budget_item_id: UUID
+
+class GatePreviewResponse(BaseModel):
+    allowed: bool
+    reason: Optional[str] = None
+    reasons: list[str] = Field(default_factory=list)
 
 
 # --- Ответная схема ---

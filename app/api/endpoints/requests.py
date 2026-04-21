@@ -11,11 +11,12 @@ from app.models.audit import AuditLog
 from app.models.notification import Notification
 
 from app.api.deps import get_db, PermissionChecker
-from app.schemas.request import RequestCreate, RequestUpdate, RequestResponse, StatusUpdate
+from app.schemas.request import GatePreviewRequest, GatePreviewResponse, RequestCreate, RequestUpdate, RequestResponse, StatusUpdate
 from app.services import request_service
 from app.services.app_settings import get_storage_path
 from app.models.request import ApprovalStatus, PaymentStatus
-from app.models.calendar import PaymentCalendar
+from app.models.budget import BudgetItem
+from app.models.calendar import DayTypeRule, PaymentCalendar
 from app.models.organization import Organization
 from app.models.user import User
 from app.services import notification_service as notif_svc
@@ -34,6 +35,58 @@ SUBMIT_CUTOFF_HOUR = 11  # До 11:00 МСК — обычный приём
 ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 
 router = APIRouter()
+
+DAY_TYPE_REASONS = {
+    "NON_PAYMENT": "неплатёжный день",
+    "HOLIDAY": "выходной день",
+    "SALARY_DAY": "день выплаты зарплаты",
+}
+
+async def get_gate_preview(
+    db: AsyncSession,
+    *,
+    payment_date,
+    organization_id: UUID,
+    budget_item_id: UUID,
+) -> GatePreviewResponse:
+    reasons: list[str] = []
+    now_msk = datetime.now(MOSCOW_TZ)
+
+    if payment_date == now_msk.date() and now_msk.hour >= SUBMIT_CUTOFF_HOUR:
+        reasons.append(f"Заявка подана после {SUBMIT_CUTOFF_HOUR}:00 МСК ({now_msk.strftime('%H:%M')})")
+
+    org_res = await db.execute(select(Organization).where(Organization.id == organization_id))
+    org = org_res.scalar_one_or_none()
+    if org and org.payment_group_id:
+        cal_res = await db.execute(
+            select(PaymentCalendar).where(
+                PaymentCalendar.date == payment_date,
+                PaymentCalendar.payment_group_id == org.payment_group_id,
+            )
+        )
+        cal_day = cal_res.scalar_one_or_none()
+        if cal_day and cal_day.day_type != "PAYMENT":
+            budget_res = await db.execute(select(BudgetItem).where(BudgetItem.id == budget_item_id))
+            budget_item = budget_res.scalar_one_or_none()
+            allowed = False
+            if budget_item and budget_item.category:
+                rule_res = await db.execute(
+                    select(DayTypeRule).where(
+                        DayTypeRule.day_type == cal_day.day_type,
+                        DayTypeRule.allowed_category == budget_item.category,
+                    )
+                )
+                allowed = rule_res.scalar_one_or_none() is not None
+
+            if not allowed:
+                day_reason = DAY_TYPE_REASONS.get(cal_day.day_type, cal_day.day_type)
+                reasons.append(f"Дата оплаты {payment_date} — {day_reason}")
+
+    return GatePreviewResponse(
+        allowed=not reasons,
+        reason="; ".join(reasons) if reasons else None,
+        reasons=reasons,
+    )
 
 @router.post("/", response_model=RequestResponse)
 async def create_request(
@@ -82,6 +135,19 @@ async def get_marked_for_deletion(
         .order_by(PaymentRequest.created_at.desc())
     )
     return result.scalars().all()
+
+@router.post("/gate_preview", response_model=GatePreviewResponse)
+async def preview_gate(
+    data: GatePreviewRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(PermissionChecker("req_create"))
+):
+    return await get_gate_preview(
+        db,
+        payment_date=data.payment_date,
+        organization_id=data.organization_id,
+        budget_item_id=data.budget_item_id,
+    )
 
 @router.delete("/marked_for_deletion")
 async def purge_marked_for_deletion(
@@ -164,36 +230,16 @@ async def submit_request(
         raise HTTPException(status_code=400, detail="Укажите дату оплаты перед отправкой")
 
     # Проверяем временной шлюз (МСК) — только если дата оплаты = сегодня
-    now_msk = datetime.now(MOSCOW_TZ)
-    gate_violation: Optional[str] = None
+    gate_preview = await get_gate_preview(
+        db,
+        payment_date=req.payment_date,
+        organization_id=req.organization_id,
+        budget_item_id=req.budget_item_id,
+    )
 
-    if req.payment_date == now_msk.date() and now_msk.hour >= SUBMIT_CUTOFF_HOUR:
-        gate_violation = f"Заявка подана после {SUBMIT_CUTOFF_HOUR}:00 МСК ({now_msk.strftime('%H:%M')})"
-
-    # Проверяем тип дня по платёжному календарю организации
-    if not gate_violation:
-        org_res = await db.execute(select(Organization).where(Organization.id == req.organization_id))
-        org = org_res.scalar_one_or_none()
-        if org and org.payment_group_id:
-            cal_res = await db.execute(
-                select(PaymentCalendar).where(
-                    PaymentCalendar.date == req.payment_date,
-                    PaymentCalendar.payment_group_id == org.payment_group_id,
-                )
-            )
-            cal_day = cal_res.scalar_one_or_none()
-            if cal_day and cal_day.day_type != "PAYMENT":
-                day_type_reasons = {
-                    "NON_PAYMENT": "неплатёжный день",
-                    "HOLIDAY": "выходной день",
-                    "SALARY_DAY": "день выплаты зарплаты",
-                }
-                reason = day_type_reasons.get(cal_day.day_type, cal_day.day_type)
-                gate_violation = f"Дата оплаты {req.payment_date} — {reason}"
-
-    if gate_violation:
+    if not gate_preview.allowed:
         req.approval_status = ApprovalStatus.PENDING_GATE
-        req.gate_reason = gate_violation
+        req.gate_reason = gate_preview.reason
         await db.commit()
         return await request_service.get_request_by_id(db, request_id)
 
