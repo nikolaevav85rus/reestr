@@ -374,12 +374,18 @@ async def move_to_draft(
     if req.approval_status not in allowed:
         raise HTTPException(status_code=400, detail="Перенос доступен только для заявок в статусе 'Вне бюджета' или 'Перенесено'")
     from datetime import date as date_type
+    old_date = req.payment_date
     new_date = data.get("payment_date")
     if new_date:
         req.payment_date = date_type.fromisoformat(new_date)
     if req.approval_status == ApprovalStatus.PENDING_MEMO:
-        req.is_budgeted = None  # сбрасываем отметку бюджета только для PENDING_MEMO
+        req.is_budgeted = None
     req.approval_status = ApprovalStatus.DRAFT
+    old_str = old_date.strftime('%d.%m.%Y') if old_date else '—'
+    new_str = req.payment_date.strftime('%d.%m.%Y') if req.payment_date else '—'
+    db.add(Notification(user_id=req.creator_id, request_id=req.id,
+        text=f"Инициатор перенёс дату с {old_str} на {new_str}: {req.counterparty}, {req.amount:,.0f} ₽",
+        type="RESCHEDULED"))
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 
@@ -433,7 +439,7 @@ async def suspend_request(
     await notif_svc.create_notification(
         db, user_id=req.creator_id, request_id=req.id,
         notif_type="SUSPENDED",
-        text=f"Заявка подвешена — недостаточно средств: {req.counterparty}, {req.amount:,.0f} ₽",
+        text=f"Заявка подвешена: {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}",
     )
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
@@ -446,20 +452,53 @@ async def unsuspend_request(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("req_suspend"))
 ):
-    """Перенести подвешенную заявку в DRAFT с новой датой."""
+    """Перенести подвешенную заявку на новую дату. Спецраспоряжение сбрасывается, заявка идёт на согласование."""
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     if req.approval_status != ApprovalStatus.SUSPENDED:
         raise HTTPException(status_code=400, detail="Заявка не подвешена")
     from datetime import date as date_type
-    new_date = data.get("payment_date")
-    if new_date:
-        req.payment_date = date_type.fromisoformat(new_date)
-    req.approval_status = ApprovalStatus.DRAFT
+    old_date = req.payment_date
+    new_date_str = data.get("payment_date")
+    if new_date_str:
+        req.payment_date = date_type.fromisoformat(new_date_str)
+    req.special_order = False
+    req.approval_status = ApprovalStatus.PENDING
     req.rejection_reason = None
+    old_str = old_date.strftime('%d.%m.%Y') if old_date else '—'
+    new_str = req.payment_date.strftime('%d.%m.%Y') if req.payment_date else '—'
+    await notif_svc.create_notification(
+        db, user_id=req.creator_id, request_id=req.id,
+        notif_type="RESCHEDULED",
+        text=f"Заявка перенесена с {old_str} на {new_str}: {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование.",
+    )
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
+
+
+@router.get("/{request_id}/history")
+async def get_request_history(
+    request_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(PermissionChecker("req_view_own")),
+):
+    """История событий по заявке (все уведомления, привязанные к ней)."""
+    res = await db.execute(
+        select(Notification)
+        .where(Notification.request_id == request_id)
+        .order_by(Notification.created_at.asc())
+    )
+    notifications = res.scalars().all()
+    return [
+        {
+            "id": str(n.id),
+            "type": n.type,
+            "text": n.text,
+            "created_at": n.created_at.isoformat() if n.created_at else None,
+        }
+        for n in notifications
+    ]
 
 
 @router.post("/{request_id}/approve", response_model=RequestResponse)
@@ -495,7 +534,22 @@ async def postpone_request(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("req_approve"))
 ):
-    return await request_service.update_request_status(db, request_id, ApprovalStatus.POSTPONED, reason=body.reason)
+    from datetime import date as date_type
+    req = await request_service.get_request_by_id(db, request_id)
+    if not req:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    old_date = req.payment_date
+    if body.payment_date:
+        req.payment_date = date_type.fromisoformat(body.payment_date)
+    req.approval_status = ApprovalStatus.POSTPONED
+    req.rejection_reason = body.reason
+    old_str = old_date.strftime('%d.%m.%Y') if old_date else '—'
+    new_str = req.payment_date.strftime('%d.%m.%Y') if req.payment_date else '—'
+    date_info = f"с {old_str} на {new_str}" if body.payment_date else f"(дата оплаты: {old_str})"
+    text = f"Заявка перенесена {date_info}: {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}"
+    db.add(Notification(user_id=req.creator_id, request_id=req.id, text=text, type="POSTPONED"))
+    await db.commit()
+    return await request_service.get_request_by_id(db, request_id)
 
 @router.post("/{request_id}/pay", response_model=RequestResponse)
 async def pay_request(

@@ -190,7 +190,6 @@ async def update_request_status(
     notif_map = {
         ApprovalStatus.REJECTED:      ("REJECTED",      f"Заявка отклонена: {req.counterparty}, {req.amount:,.0f} ₽. Причина: {reason or '—'}"),
         ApprovalStatus.CLARIFICATION: ("CLARIFICATION", f"По заявке требуется уточнение: {req.counterparty}, {req.amount:,.0f} ₽. Комментарий: {reason or '—'}"),
-        ApprovalStatus.POSTPONED:     ("POSTPONED",     f"Заявка перенесена: {req.counterparty}, {req.amount:,.0f} ₽. Причина: {reason or '—'}"),
     }
     if status in notif_map:
         notif_type, text = notif_map[status]

@@ -65,6 +65,7 @@ class RequestUpdate(BaseModel):
 
 class StatusUpdate(BaseModel):
     reason: Optional[str] = None
+    payment_date: Optional[str] = None
 
 
 # --- Ответная схема ---

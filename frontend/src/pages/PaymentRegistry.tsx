@@ -3,7 +3,7 @@ import dayjs from 'dayjs';
 import {
   Table, Tag, Button, Space, Typography, Card, Row, Col,
   Select, Input, Modal, Form, InputNumber, DatePicker,
-  App as AntdApp, Popconfirm, Tooltip, Divider, Upload, Switch, Segmented,
+  App as AntdApp, Popconfirm, Tooltip, Divider, Upload, Switch, Segmented, Timeline,
 } from 'antd';
 import type { UploadFile } from 'antd';
 import {
@@ -136,6 +136,17 @@ const APPROVAL_CONFIG: Record<string, { label: string; color: string }> = {
 const PAYMENT_CONFIG: Record<string, { label: string; color: string }> = {
   UNPAID: { label: 'Не оплачено', color: 'default' },
   PAID:   { label: 'Оплачено',    color: 'green'   },
+};
+
+const HISTORY_COLOR: Record<string, string> = {
+  SUSPENDED:     'red',
+  RESCHEDULED:   'green',
+  REJECTED:      'red',
+  CLARIFICATION: 'blue',
+  POSTPONED:     'orange',
+  GATE_REJECTED: 'purple',
+  OFF_BUDGET:    'orange',
+  EOD_UNPAID:    'gray',
 };
 
 // null → Необработано, true → Есть, false → Нет
@@ -297,12 +308,23 @@ const PaymentRegistry: React.FC = () => {
   // ─── Модалка переноса даты (PENDING_MEMO → DRAFT) ────────────────────────
   const [moveDraftModal, setMoveDraftModal] = useState<{ open: boolean; requestId: string }>({ open: false, requestId: '' });
   const [moveDraftDate, setMoveDraftDate] = useState<any>(null);
+  const [postponeModal, setPostponeModal] = useState<{ open: boolean; requestId: string }>({ open: false, requestId: '' });
+  const [postponeDate, setPostponeDate] = useState<any>(null);
+  const [postponeReason, setPostponeReason] = useState('');
 
   // ─── Просмотр файла ──────────────────────────────────────────────────────
   const [filePreview, setFilePreview] = useState<{ url: string; name: string } | null>(null);
 
   // ─── Модалка просмотра заявки ─────────────────────────────────────────────
   const [viewingRequest, setViewingRequest] = useState<any>(null);
+  const [requestHistory, setRequestHistory] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!viewingRequest) { setRequestHistory([]); return; }
+    apiClient.get(`/requests/${viewingRequest.id}/history`)
+      .then(r => setRequestHistory(r.data))
+      .catch(() => setRequestHistory([]));
+  }, [viewingRequest]);
 
   // ─── Загрузка справочников ───────────────────────────────────────────────
   useEffect(() => {
@@ -551,7 +573,7 @@ const PaymentRegistry: React.FC = () => {
       const r = await apiClient.post(`/requests/${id}/submit`);
       const status = r.data.approval_status;
       if (status === 'PENDING_GATE') {
-        messageApi.warning('Заявка отправлена на разрешение ФЭО (нарушение шлюза)');
+        messageApi.warning(`Заявка направлена на разрешение ФЭО: ${r.data.gate_reason}`);
       } else {
         messageApi.success('Заявка отправлена на согласование');
       }
@@ -626,7 +648,7 @@ const PaymentRegistry: React.FC = () => {
       await apiClient.post(`/requests/${unsuspendModal.requestId}/unsuspend`, {
         payment_date: unsuspendDate.format('YYYY-MM-DD'),
       });
-      messageApi.success('Заявка перенесена в черновик');
+      messageApi.success('Заявка перенесена, передана на согласование');
       setUnsuspendModal({ open: false, requestId: '' });
       setUnsuspendDate(null);
       fetchRequests();
@@ -673,6 +695,23 @@ const PaymentRegistry: React.FC = () => {
     }
   };
 
+  const handlePostpone = async () => {
+    if (!postponeReason.trim()) { messageApi.warning('Укажите причину переноса'); return; }
+    try {
+      await apiClient.post(`/requests/${postponeModal.requestId}/postpone`, {
+        reason: postponeReason,
+        payment_date: postponeDate ? postponeDate.format('YYYY-MM-DD') : undefined,
+      });
+      messageApi.success('Заявка перенесена');
+      setPostponeModal({ open: false, requestId: '' });
+      setPostponeDate(null);
+      setPostponeReason('');
+      fetchRequests();
+    } catch (e: any) {
+      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    }
+  };
+
   // ─── Согласование (inline) ────────────────────────────────────────────────
   const handleApprovalInline = (requestId: string, newStatus: string) => {
     if (newStatus === 'APPROVED') {
@@ -682,7 +721,7 @@ const PaymentRegistry: React.FC = () => {
     } else if (newStatus === 'CLARIFICATION') {
       openReasonModal('clarify', requestId, 'Комментарий для уточнения');
     } else if (newStatus === 'POSTPONED') {
-      openReasonModal('postpone', requestId, 'Причина переноса');
+      setPostponeModal({ open: true, requestId });
     }
   };
 
@@ -1433,6 +1472,29 @@ const PaymentRegistry: React.FC = () => {
         />
       </Modal>
 
+      {/* Модалка переноса (ФЭО) — причина + дата */}
+      <Modal
+        open={postponeModal.open}
+        title="Перенести заявку"
+        onCancel={() => { setPostponeModal({ open: false, requestId: '' }); setPostponeDate(null); setPostponeReason(''); }}
+        onOk={handlePostpone}
+        okText="Перенести" cancelText="Отменить"
+      >
+        <div style={{ marginBottom: 12, color: '#8c8c8c' }}>
+          Укажите причину переноса и при необходимости новую дату оплаты.
+        </div>
+        <div style={{ marginBottom: 8 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>Причина *</Text>
+          <Input.TextArea rows={2} value={postponeReason}
+            onChange={e => setPostponeReason(e.target.value)} style={{ marginTop: 4 }} />
+        </div>
+        <div>
+          <Text type="secondary" style={{ fontSize: 12 }}>Новая дата оплаты</Text>
+          <DatePicker style={{ width: '100%', marginTop: 4 }} format="DD.MM.YYYY"
+            locale={DATE_PICKER_LOCALE} value={postponeDate} onChange={setPostponeDate} />
+        </div>
+      </Modal>
+
       {/* Модалка разрешения/отклонения шлюза */}
       <ReasonModal
         open={gateModal.open}
@@ -1510,6 +1572,24 @@ const PaymentRegistry: React.FC = () => {
                 {r.gate_reason      && row('Комментарий шлюза',  <Text>{r.gate_reason}</Text>)}
                 {r.feo_note         && row('Примечание ФЭО',     <Text>{r.feo_note}</Text>)}
                 {r.gate_approver    && row('Разрешил шлюз',      <Text>{r.gate_approver.full_name}</Text>)}
+              </>)}
+
+              {/* Блок: История событий */}
+              {requestHistory.length > 0 && (<>
+                <Divider>История</Divider>
+                <Timeline
+                  items={requestHistory.map(h => ({
+                    color: HISTORY_COLOR[h.type] ?? 'gray',
+                    children: (
+                      <div>
+                        <Text type="secondary" style={{ fontSize: 12 }}>
+                          {new Date(h.created_at).toLocaleString('ru-RU')}
+                        </Text>
+                        <div><Text>{h.text}</Text></div>
+                      </div>
+                    ),
+                  }))}
+                />
               </>)}
 
               {/* Блок: Служебная информация */}
