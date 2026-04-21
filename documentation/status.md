@@ -235,7 +235,7 @@ PENDING
 APPROVED
   └─► [Специалист по платежам: req_pay / req_suspend]
         ├─ «Оплатить»    → PAID
-        └─ «Подвесить»   → SUSPENDED  (см. Блок 5.3)
+        └─ «Отложить»   → SUSPENDED  (см. Блок 5.3)
 
 REJECTED
   └─► Финальный статус (инициатор видит причину, может создать новую заявку)
@@ -297,12 +297,12 @@ PENDING_MEMO
 
 ---
 
-**~~Блок 5.3: SUSPENDED (подвешенные заявки) + Уведомления~~ ✅ ЗАКРЫТ**
+**~~Блок 5.3: SUSPENDED (отложенные заявки) + Уведомления~~ ✅ ЗАКРЫТ**
 
 ```
 APPROVED
   └─► [Специалист по платежам: req_suspend]
-        → «Подвесить» → approval_status = SUSPENDED
+        → «Отложить» → approval_status = SUSPENDED
               (инициатор получает мгновенное уведомление)
 
 SUSPENDED
@@ -312,7 +312,7 @@ SUSPENDED
               (инициатор уведомлён)
 ```
 
-Подвешенные отображаются в таблице красным фоном (аналог «красить красным с точкой» из Excel).
+Отложенные заявки отображаются в таблице красным фоном (аналог «красить красным с точкой» из Excel).
 
 Уведомления — таблица `notifications` (id, user_id, request_id, text, type, is_read, created_at):
 
@@ -322,7 +322,7 @@ SUSPENDED
 | reject / reject_memo | REJECTED | «Заявка [контрагент, сумма] отклонена: [причина]» |
 | clarify | CLARIFICATION | «По заявке [контрагент] требуется уточнение: [комментарий]» |
 | postpone | POSTPONED | «Заявка [контрагент] перенесена ФЭО: [причина]» |
-| suspend | SUSPENDED | «Заявка [контрагент, сумма] подвешена — недостаточно средств» |
+| suspend | SUSPENDED | «Заявка [контрагент, сумма] отложена — недостаточно средств» |
 | is_budgeted=False + PENDING_MEMO | OFF_BUDGET | «Заявка [контрагент] отмечена как внебюджетная, ожидает утверждения» |
 | Крон 17:00 — не PAID | EOD_UNPAID | «Заявка [контрагент, сумма] на [дата] не была оплачена сегодня» |
 
@@ -350,11 +350,11 @@ SUSPENDED
 * Роутер `app/api/endpoints/notifications.py`: `GET /notifications/`, `GET /notifications/unread_count`, `POST /notifications/{id}/read`, `POST /notifications/read_all`.
 * Scheduler запускается/останавливается через `startup`/`shutdown` events в `main.py`.
 * Фронтенд `App.tsx`: компонент `NotificationBell` — колокольчик с бейджем в хедере, опрос `/unread_count` каждые 30 сек, Dropdown со списком уведомлений (цвет по типу), авточтение при открытии.
-* Фронтенд `PaymentRegistry.tsx`: кнопка «Подвесить» (розовая, ClockCircleOutlined) для `canApprove` (ФЭО) при APPROVED; кнопка «Перенести» (оранжевая) при SUSPENDED → модалка выбора даты → `unsuspend`.
+* Фронтенд `PaymentRegistry.tsx`: кнопка «Отложить» (розовая, ClockCircleOutlined) для `canApprove` (ФЭО) при APPROVED; кнопка «Вернуть на согласование» (оранжевая) при SUSPENDED → модалка выбора даты → `unsuspend`.
 * Строки SUSPENDED — красный фон (`#fff1f0`).
 
 Исправление после тестирования:
-* Подвешивание и перенос — функция ФЭО, не Казначея. Эндпоинты `suspend`/`unsuspend` переведены на `req_approve`. RBAC: Казначей лишён `req_suspend`, ФЭО получил `req_suspend`. Фронтенд: `canSuspend = canApprove`. Seed-скрипт обновлён и перезапущен.
+* Отложение и возврат на согласование — функция ФЭО, не Казначея. Эндпоинты `suspend`/`unsuspend` переведены на `req_approve`. RBAC: Казначей лишён `req_suspend`, ФЭО получил `req_suspend`. Фронтенд: `canSuspend = canApprove`. Seed-скрипт обновлён и перезапущен.
 
 **~~Блок 6: Колонка «Бюджет» (Да/Нет)~~ ✅ ЗАКРЫТ**
 * Поле `is_budgeted: Boolean nullable` добавлено в модель `PaymentRequest` (None=Не указано, True=Да, False=Нет).
@@ -493,7 +493,7 @@ Seed обновлён: `scripts/seed_rbac_matrix.py` — **требует пер
 **~~Блок 12: Уведомления~~ ✅ ЗАКРЫТ** (реализован в рамках Блока 5.3)
 * Таблица `notifications`, сервис, роутер — реализованы.
 * Бейдж-колокольчик в хедере с polling каждые 30 сек — реализован.
-* Триггеры: отклонение (REJECTED), уточнение (CLARIFICATION), перенос (POSTPONED), подвешивание (SUSPENDED), внебюджетная (OFF_BUDGET), крон 17:00 (EOD_UNPAID).
+* Триггеры: отклонение (REJECTED), уточнение (CLARIFICATION), перенос (POSTPONED), отложение (SUSPENDED), внебюджетная (OFF_BUDGET), крон 17:00 (EOD_UNPAID).
 * Максимум: email/Telegram — отложено.
 
 **Блок 13: Пагинация на уровне API**

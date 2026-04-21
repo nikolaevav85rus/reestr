@@ -68,14 +68,14 @@ const StorageSettings: React.FC = () => {
 // ─── Очистка помеченных заявок ───────────────────────────────────────────────
 const APPROVAL_LABELS: Record<string, { label: string; color: string }> = {
   DRAFT:         { label: 'Черновик',        color: 'default' },
-  PENDING_GATE:  { label: 'Ожид. шлюза',    color: 'purple'  },
+  PENDING_GATE:  { label: 'Требует исключения', color: 'purple'  },
   PENDING:       { label: 'На согласовании', color: 'blue'    },
   PENDING_MEMO:  { label: 'Вне бюджета',     color: 'orange'  },
   CLARIFICATION: { label: 'На уточнении',    color: 'gold'    },
   APPROVED:      { label: 'Согласовано',     color: 'green'   },
   REJECTED:      { label: 'Отклонено',       color: 'red'     },
   POSTPONED:     { label: 'Перенесено',      color: 'gold'    },
-  SUSPENDED:     { label: 'Подвешена',       color: 'magenta' },
+  SUSPENDED:     { label: 'Отложена',        color: 'magenta' },
 };
 
 const MarkedDeletionSettings: React.FC = () => {

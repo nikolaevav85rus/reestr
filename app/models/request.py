@@ -17,7 +17,7 @@ class ApprovalStatus(str, enum.Enum):
     APPROVED = "APPROVED"           # Утверждено
     REJECTED = "REJECTED"           # Отклонено
     POSTPONED = "POSTPONED"         # Перенос
-    SUSPENDED = "SUSPENDED"         # Подвешена (недостаточно средств)
+    SUSPENDED = "SUSPENDED"         # Отложена (недостаточно средств)
 
 class PaymentStatus(str, enum.Enum):
     UNPAID = "UNPAID" # Не оплачено

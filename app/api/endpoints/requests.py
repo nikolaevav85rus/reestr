@@ -183,13 +183,13 @@ async def submit_request(
             )
             cal_day = cal_res.scalar_one_or_none()
             if cal_day and cal_day.day_type != "PAYMENT":
-                type_labels = {
-                    "NON_PAYMENT": "неплатёжный",
-                    "HOLIDAY": "выходной",
+                day_type_reasons = {
+                    "NON_PAYMENT": "неплатёжный день",
+                    "HOLIDAY": "выходной день",
                     "SALARY_DAY": "день выплаты зарплаты",
                 }
-                label = type_labels.get(cal_day.day_type, cal_day.day_type)
-                gate_violation = f"Дата оплаты {req.payment_date} — {label} день"
+                reason = day_type_reasons.get(cal_day.day_type, cal_day.day_type)
+                gate_violation = f"Дата оплаты {req.payment_date} — {reason}"
 
     if gate_violation:
         req.approval_status = ApprovalStatus.PENDING_GATE
@@ -432,14 +432,14 @@ async def suspend_request(
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     if req.approval_status != ApprovalStatus.APPROVED:
-        raise HTTPException(status_code=400, detail="Подвесить можно только согласованную заявку")
+        raise HTTPException(status_code=400, detail="Отложить можно только согласованную заявку")
     req.approval_status = ApprovalStatus.SUSPENDED
     req.rejection_reason = body.reason
     await db.commit()
     await notif_svc.create_notification(
         db, user_id=req.creator_id, request_id=req.id,
         notif_type="SUSPENDED",
-        text=f"Заявка подвешена: {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}",
+        text=f"Заявка отложена: {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}",
     )
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
@@ -452,12 +452,12 @@ async def unsuspend_request(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("req_suspend"))
 ):
-    """Перенести подвешенную заявку на новую дату. Спецраспоряжение сбрасывается, заявка идёт на согласование."""
+    """Перенести отложенную заявку на новую дату. Спецраспоряжение сбрасывается, заявка идёт на согласование."""
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     if req.approval_status != ApprovalStatus.SUSPENDED:
-        raise HTTPException(status_code=400, detail="Заявка не подвешена")
+        raise HTTPException(status_code=400, detail="Заявка не отложена")
     from datetime import date as date_type
     old_date = req.payment_date
     new_date_str = data.get("payment_date")

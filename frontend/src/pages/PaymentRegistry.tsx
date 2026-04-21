@@ -3,15 +3,15 @@ import dayjs from 'dayjs';
 import {
   Table, Tag, Button, Space, Typography, Card, Row, Col,
   Select, Input, Modal, Form, InputNumber, DatePicker,
-  App as AntdApp, Popconfirm, Tooltip, Divider, Upload, Switch, Segmented, Timeline,
+  App as AntdApp, Popconfirm, Tooltip, Divider, Upload, Switch, Segmented, Timeline, Dropdown,
 } from 'antd';
-import type { UploadFile } from 'antd';
+import type { MenuProps, UploadFile } from 'antd';
 import {
   PlusOutlined, EditOutlined, CheckOutlined,
   CloseOutlined, ClockCircleOutlined,
   DollarOutlined, UploadOutlined, PaperClipOutlined,
   ClearOutlined, SendOutlined, ThunderboltOutlined, CopyOutlined,
-  RestOutlined, SettingOutlined,
+  RestOutlined, SettingOutlined, MoreOutlined,
 } from '@ant-design/icons';
 import apiClient from '../api/apiClient';
 import axios from 'axios';
@@ -123,14 +123,14 @@ function buildColumns(settings: ColSetting[], renderers: Record<string, any>, is
 
 const APPROVAL_CONFIG: Record<string, { label: string; color: string }> = {
   DRAFT:         { label: 'Черновик',          color: 'default'  },
-  PENDING_GATE:  { label: 'Ожидает разрешения', color: 'purple'  },
+  PENDING_GATE:  { label: 'Требует исключения', color: 'purple'  },
   PENDING:       { label: 'На согласовании',   color: 'blue'     },
   PENDING_MEMO:  { label: 'Вне бюджета',       color: 'volcano'  },
   APPROVED:      { label: 'Согласовано',       color: 'green'    },
   REJECTED:      { label: 'Отклонено',         color: 'red'      },
   CLARIFICATION: { label: 'На уточнении',      color: 'orange'   },
   POSTPONED:     { label: 'Перенесено',        color: 'gold'     },
-  SUSPENDED:     { label: 'Подвешена',         color: 'magenta'  },
+  SUSPENDED:     { label: 'Отложена',          color: 'magenta'  },
 };
 
 const PAYMENT_CONFIG: Record<string, { label: string; color: string }> = {
@@ -179,7 +179,7 @@ const ReasonModal: React.FC<{
 // ─── Основной компонент ─────────────────────────────────────────────────────
 
 const PaymentRegistry: React.FC = () => {
-  const { message: messageApi, notification } = AntdApp.useApp();
+  const { message: messageApi, notification, modal } = AntdApp.useApp();
   const user = useAuthStore(s => s.user);
   const permissions = useAuthStore(s => s.permissions);
 
@@ -297,7 +297,7 @@ const PaymentRegistry: React.FC = () => {
     open: boolean; title: string; action: string; requestId: string;
   }>({ open: false, title: '', action: '', requestId: '' });
 
-  // ─── Модалка шлюза ───────────────────────────────────────────────────────
+  // ─── Модалка исключения из регламента ────────────────────────────────────
   const [gateModal, setGateModal] = useState<{
     open: boolean; type: 'approve' | 'reject'; requestId: string; violation: string;
   }>({ open: false, type: 'approve', requestId: '', violation: '' });
@@ -573,7 +573,7 @@ const PaymentRegistry: React.FC = () => {
       const r = await apiClient.post(`/requests/${id}/submit`);
       const status = r.data.approval_status;
       if (status === 'PENDING_GATE') {
-        messageApi.warning(`Заявка направлена на разрешение ФЭО: ${r.data.gate_reason}`);
+        messageApi.warning(`Заявка требует исключения из регламента: ${r.data.gate_reason}`);
       } else {
         messageApi.success('Заявка отправлена на согласование');
       }
@@ -606,11 +606,11 @@ const PaymentRegistry: React.FC = () => {
     }
   };
 
-  // ─── Шлюз (PENDING_GATE) ─────────────────────────────────────────────────
+  // ─── Исключение из регламента (PENDING_GATE) ─────────────────────────────
   const handleApproveGate = async (id: string, reason: string) => {
     try {
       await apiClient.post(`/requests/${id}/approve_gate`, { reason });
-      messageApi.success('Экстренный платёж разрешён');
+      messageApi.success('Исключение разрешено');
       fetchRequests();
     } catch (e: any) {
       messageApi.error(e.response?.data?.detail || 'Ошибка');
@@ -635,7 +635,7 @@ const PaymentRegistry: React.FC = () => {
   const handleSuspend = async (id: string, reason: string) => {
     try {
       await apiClient.post(`/requests/${id}/suspend`, { reason });
-      messageApi.success('Заявка подвешена');
+      messageApi.success('Заявка отложена');
       fetchRequests();
     } catch (e: any) {
       messageApi.error(e.response?.data?.detail || 'Ошибка');
@@ -713,18 +713,6 @@ const PaymentRegistry: React.FC = () => {
   };
 
   // ─── Согласование (inline) ────────────────────────────────────────────────
-  const handleApprovalInline = (requestId: string, newStatus: string) => {
-    if (newStatus === 'APPROVED') {
-      handleAction('approve', requestId);
-    } else if (newStatus === 'REJECTED') {
-      openReasonModal('reject', requestId, 'Причина отклонения');
-    } else if (newStatus === 'CLARIFICATION') {
-      openReasonModal('clarify', requestId, 'Комментарий для уточнения');
-    } else if (newStatus === 'POSTPONED') {
-      setPostponeModal({ open: true, requestId });
-    }
-  };
-
   // ─── Действия со статусами ────────────────────────────────────────────────
   const handleAction = async (action: string, requestId: string, reason = '') => {
     try {
@@ -744,8 +732,90 @@ const PaymentRegistry: React.FC = () => {
     setReasonModal({ open: true, title, action, requestId });
   };
 
+  type WorkflowAction = {
+    key: string;
+    label: string;
+    icon?: React.ReactNode;
+    danger?: boolean;
+    color?: string;
+    run: () => void;
+    confirmTitle?: string;
+    confirmDescription?: React.ReactNode;
+    confirmOkText?: string;
+  };
+
+  const runWorkflowAction = (action: WorkflowAction) => {
+    if (!action.confirmTitle) {
+      action.run();
+      return;
+    }
+    modal.confirm({
+      title: action.confirmTitle,
+      content: action.confirmDescription,
+      okText: action.confirmOkText ?? action.label,
+      cancelText: 'Отмена',
+      okButtonProps: { danger: action.danger },
+      onOk: action.run,
+    });
+  };
+
+  const renderPrimaryAction = (action?: WorkflowAction) => {
+    if (!action) return null;
+    const button = (
+      <Button
+        size="small"
+        type="primary"
+        danger={action.danger}
+        icon={action.icon}
+        style={action.color ? { background: action.color, borderColor: action.color } : undefined}
+        onClick={action.confirmTitle ? undefined : action.run}
+      >
+        {action.label}
+      </Button>
+    );
+    return action.confirmTitle ? (
+      <Popconfirm
+        title={action.confirmTitle}
+        description={action.confirmDescription}
+        okText={action.confirmOkText ?? action.label}
+        cancelText="Отмена"
+        okButtonProps={{ danger: action.danger }}
+        onConfirm={action.run}
+      >
+        {button}
+      </Popconfirm>
+    ) : button;
+  };
+
+  const renderSecondaryActions = (actions: WorkflowAction[]) => {
+    if (!actions.length) return null;
+    const menu: MenuProps = {
+      items: actions.map(action => ({
+        key: action.key,
+        label: action.label,
+        icon: action.icon,
+        danger: action.danger,
+      })),
+      onClick: ({ key }) => {
+        const action = actions.find(item => item.key === key);
+        if (action) runWorkflowAction(action);
+      },
+    };
+    return (
+      <Dropdown menu={menu} trigger={['click']}>
+        <Button type="text" size="small" icon={<MoreOutlined />} aria-label="Дополнительные действия" />
+      </Dropdown>
+    );
+  };
+
   // ─── Колонки таблицы ─────────────────────────────────────────────────────
   const isGroupRow = (r: any) => r._type === 'org' || r._type === 'dircat' || r._type === 'category';
+  const shouldIgnoreRowClick = (event: React.MouseEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement | null;
+    return !!target?.closest(
+      'button,a,input,textarea,select,[role="button"],.ant-btn,.ant-select,.ant-picker,.ant-checkbox,.ant-radio,.ant-switch,.ant-upload,.ant-table-row-expand-icon'
+    );
+  };
 
   const COLUMN_RENDERERS: Record<string, any> = {
     payment_date: {
@@ -878,20 +948,6 @@ const PaymentRegistry: React.FC = () => {
       render: (v: string, r: any) => {
         if (isGroupRow(r)) return null;
         const cfg = APPROVAL_CONFIG[v] ?? { label: v, color: 'default' };
-        if (canApprove && v === 'PENDING') {
-          return (
-            <Select
-              size="small"
-              value={v}
-              style={{ width: 160 }}
-              options={['PENDING','APPROVED','REJECTED','CLARIFICATION','POSTPONED'].map(k => ({
-                value: k,
-                label: <Tag color={APPROVAL_CONFIG[k]?.color}>{APPROVAL_CONFIG[k]?.label}</Tag>,
-              }))}
-              onChange={(newVal) => handleApprovalInline(r.id, newVal)}
-            />
-          );
-        }
         return <Tag color={cfg.color}>{cfg.label}</Tag>;
       },
     },
@@ -965,14 +1021,14 @@ const PaymentRegistry: React.FC = () => {
         if (isGroupRow(r)) return null;
         if (r.approval_status === 'PENDING_GATE') {
           return (
-            <Tooltip title={`Ожидает разрешения ФЭО: ${r.gate_reason || ''}`}>
+            <Tooltip title={`Требует исключения из регламента: ${r.gate_reason || ''}`}>
               <ThunderboltOutlined style={{ color: '#722ed1' }} />
             </Tooltip>
           );
         }
         if (v) {
           return (
-            <Tooltip title={`Спец. разрешение ФЭО${r.gate_reason ? `: ${r.gate_reason}` : ''}`}>
+            <Tooltip title={`Исключение разрешено ФЭО${r.gate_reason ? `: ${r.gate_reason}` : ''}`}>
               <ThunderboltOutlined style={{ color: '#fa8c16' }} />
             </Tooltip>
           );
@@ -989,111 +1045,101 @@ const PaymentRegistry: React.FC = () => {
         const isApproved = r.approval_status === 'APPROVED';
         const isUnpaid   = r.payment_status  === 'UNPAID';
         const canResubmit = isOwner && ['DRAFT', 'CLARIFICATION', 'POSTPONED'].includes(r.approval_status);
+        const requestSummary = `${r.counterparty} — ${r.amount?.toLocaleString('ru-RU')} ₽`;
+
+        const primaryAction: WorkflowAction | undefined =
+          canCreate && canResubmit ? {
+            key: 'submit', label: 'Отправить', icon: <SendOutlined />,
+            run: () => handleSubmit(r.id),
+            confirmTitle: 'Отправить заявку на согласование?',
+            confirmDescription: requestSummary,
+            confirmOkText: 'Отправить',
+          } : canGateApprove && r.approval_status === 'PENDING_GATE' ? {
+            key: 'approve-exception', label: 'Разрешить исключение', icon: <CheckOutlined />, color: '#722ed1',
+            run: () => setGateModal({ open: true, type: 'approve', requestId: r.id, violation: r.gate_reason || '' }),
+          } : canApprove && r.approval_status === 'PENDING' ? {
+            key: 'approve', label: 'Согласовать', icon: <CheckOutlined />,
+            run: () => handleAction('approve', r.id),
+          } : canMemoApprove && r.approval_status === 'PENDING_MEMO' ? {
+            key: 'approve-memo', label: 'Утвердить вне бюджета', icon: <CheckOutlined />,
+            run: () => handleApproveMemo(r.id),
+            confirmTitle: 'Утвердить внебюджетный платёж?',
+            confirmDescription: requestSummary,
+            confirmOkText: 'Утвердить',
+          } : canPay && isApproved && isUnpaid ? {
+            key: 'pay', label: 'Оплатить', icon: <DollarOutlined />, color: '#52c41a',
+            run: () => handleAction('pay', r.id),
+            confirmTitle: 'Отметить как оплаченную?',
+            confirmDescription: requestSummary,
+            confirmOkText: 'Оплатить',
+          } : canSuspend && isApproved && isUnpaid ? {
+            key: 'suspend', label: 'Отложить', icon: <ClockCircleOutlined />, color: '#eb2f96',
+            run: () => setSuspendModal({ open: true, requestId: r.id }),
+          } : canSuspend && r.approval_status === 'SUSPENDED' ? {
+            key: 'unsuspend', label: 'Вернуть на согласование', icon: <ClockCircleOutlined />, color: '#fa8c16',
+            run: () => setUnsuspendModal({ open: true, requestId: r.id }),
+          } : canCreate && isOwner && (r.approval_status === 'PENDING_MEMO' || r.approval_status === 'POSTPONED') ? {
+            key: 'move-to-draft', label: 'Вернуть в черновик', icon: <ClockCircleOutlined />, color: '#fa8c16',
+            run: () => setMoveDraftModal({ open: true, requestId: r.id }),
+          } : undefined;
+
+        const secondaryActions: WorkflowAction[] = [];
+        if (r.file_path) {
+          secondaryActions.push({ key: 'file', label: 'Открыть файл', icon: <PaperClipOutlined />, run: () => openFile(r.id, r.file_path) });
+        }
+        if ((canCreate || canEditAll) && isDraft && (isOwner || canEditAll)) {
+          secondaryActions.push({ key: 'edit', label: 'Редактировать', icon: <EditOutlined />, run: () => openEdit(r) });
+        }
+        if (canCreate) {
+          secondaryActions.push({ key: 'copy', label: 'Копировать', icon: <CopyOutlined />, run: () => openCopy(r) });
+        }
+        if (canMarkDeletion && (canEditAll || (isOwner && r.payment_status !== 'PAID'))) {
+          secondaryActions.push({
+            key: 'mark-deletion',
+            label: r.is_marked_for_deletion ? 'Снять пометку на удаление' : 'Пометить на удаление',
+            icon: <RestOutlined />,
+            danger: !r.is_marked_for_deletion,
+            run: () => handleMarkDeletion(r.id, r.is_marked_for_deletion),
+            confirmTitle: r.is_marked_for_deletion ? 'Снять пометку на удаление?' : 'Пометить на удаление?',
+            confirmDescription: r.is_marked_for_deletion ? 'Заявка будет восстановлена' : 'Заявка будет удалена администратором при очистке',
+            confirmOkText: r.is_marked_for_deletion ? 'Снять' : 'Пометить',
+          });
+        }
+        if (canApprove && r.approval_status === 'PENDING') {
+          secondaryActions.push(
+            { key: 'reject', label: 'Отклонить', icon: <CloseOutlined />, danger: true, run: () => openReasonModal('reject', r.id, 'Причина отклонения') },
+            { key: 'clarify', label: 'На уточнение', icon: <ClockCircleOutlined />, run: () => openReasonModal('clarify', r.id, 'Комментарий для уточнения') },
+            { key: 'postpone', label: 'Перенести', icon: <ClockCircleOutlined />, run: () => setPostponeModal({ open: true, requestId: r.id }) },
+          );
+        }
+        if (canGateApprove && r.approval_status === 'PENDING_GATE') {
+          secondaryActions.push({
+            key: 'reject-exception', label: 'Отклонить исключение', icon: <CloseOutlined />, danger: true,
+            run: () => setGateModal({ open: true, type: 'reject', requestId: r.id, violation: r.gate_reason || '' }),
+          });
+        }
+        if (canMemoApprove && r.approval_status === 'PENDING_MEMO') {
+          secondaryActions.push({
+            key: 'reject-memo', label: 'Отклонить вне бюджета', icon: <CloseOutlined />, danger: true,
+            run: () => setRejectMemoModal({ open: true, requestId: r.id }),
+          });
+        }
+        if (canPay && canSuspend && isApproved && isUnpaid) {
+          secondaryActions.push({ key: 'suspend', label: 'Отложить', icon: <ClockCircleOutlined />, run: () => setSuspendModal({ open: true, requestId: r.id }) });
+        }
+        if (canCreate && isOwner && (r.approval_status === 'PENDING_MEMO' || r.approval_status === 'POSTPONED') && primaryAction?.key !== 'move-to-draft') {
+          secondaryActions.push({ key: 'move-to-draft', label: 'Вернуть в черновик', icon: <ClockCircleOutlined />, run: () => setMoveDraftModal({ open: true, requestId: r.id }) });
+        }
+
         return (
-          <Space size={2}>
-            {r.file_path && (
-              <Tooltip title="Открыть файл">
-                <Button type="text" size="small" icon={<PaperClipOutlined />}
-                  onClick={() => openFile(r.id, r.file_path)} />
-              </Tooltip>
-            )}
-            {canCreate && canResubmit && (
-              <Tooltip title="Отправить на согласование">
-                <Popconfirm
-                  title="Отправить заявку на согласование?"
-                  description={`${r.counterparty} — ${r.amount?.toLocaleString('ru-RU')} ₽`}
-                  onConfirm={() => handleSubmit(r.id)}
-                  okText="Отправить" cancelText="Отменить"
-                >
-                  <Button type="text" size="small" icon={<SendOutlined />} style={{ color: '#1677ff' }} />
-                </Popconfirm>
-              </Tooltip>
-            )}
-            {(canCreate || canEditAll) && isDraft && (isOwner || canEditAll) && (
-              <Tooltip title="Редактировать">
-                <Button type="text" size="small" icon={<EditOutlined />} onClick={() => openEdit(r)} />
-              </Tooltip>
-            )}
-            {canCreate && !isGroupRow(r) && (
-              <Tooltip title="Скопировать заявку">
-                <Button type="text" size="small" icon={<CopyOutlined />} style={{ color: '#8c8c8c' }} onClick={() => openCopy(r)} />
-              </Tooltip>
-            )}
-            {canMarkDeletion && !isGroupRow(r) &&
-              (canEditAll || (isOwner && r.payment_status !== 'PAID')) && (
-              <Popconfirm
-                title={r.is_marked_for_deletion ? 'Снять пометку на удаление?' : 'Пометить на удаление?'}
-                description={r.is_marked_for_deletion ? 'Заявка будет восстановлена' : 'Заявка будет удалена администратором при очистке'}
-                onConfirm={() => handleMarkDeletion(r.id, r.is_marked_for_deletion)}
-                okText={r.is_marked_for_deletion ? 'Снять' : 'Пометить'}
-                cancelText="Отмена"
-                okButtonProps={{ danger: !r.is_marked_for_deletion }}
-              >
-                <Tooltip title={r.is_marked_for_deletion ? 'Снять пометку на удаление' : 'Пометить на удаление'}>
-                  <Button
-                    type="text" size="small"
-                    icon={<RestOutlined />}
-                    style={{ color: r.is_marked_for_deletion ? '#ff4d4f' : '#bfbfbf' }}
-                  />
-                </Tooltip>
-              </Popconfirm>
-            )}
-            {canPay && isApproved && isUnpaid && (
-              <Popconfirm title="Отметить как оплаченную?" onConfirm={() => handleAction('pay', r.id)}>
-                <Tooltip title="Оплатить">
-                  <Button type="text" size="small" icon={<DollarOutlined />} style={{ color: '#52c41a' }} />
-                </Tooltip>
-              </Popconfirm>
-            )}
-            {canSuspend && isApproved && isUnpaid && (
-              <Tooltip title="Подвесить (недостаточно средств)">
-                <Button type="text" size="small" icon={<ClockCircleOutlined />} style={{ color: '#eb2f96' }}
-                  onClick={() => setSuspendModal({ open: true, requestId: r.id })} />
-              </Tooltip>
-            )}
-            {canSuspend && r.approval_status === 'SUSPENDED' && (
-              <Tooltip title="Перенести на другой день">
-                <Button type="text" size="small" icon={<ClockCircleOutlined />} style={{ color: '#fa8c16' }}
-                  onClick={() => setUnsuspendModal({ open: true, requestId: r.id })} />
-              </Tooltip>
-            )}
-            {canMemoApprove && r.approval_status === 'PENDING_MEMO' && (
-              <>
-                <Tooltip title="Утвердить внебюджетный платёж">
-                  <Popconfirm title="Утвердить?" onConfirm={() => handleApproveMemo(r.id)} okText="Утвердить" cancelText="Отменить">
-                    <Button type="text" size="small" icon={<CheckOutlined />} style={{ color: '#52c41a' }} />
-                  </Popconfirm>
-                </Tooltip>
-                <Tooltip title="Отклонить">
-                  <Button type="text" size="small" icon={<CloseOutlined />} danger
-                    onClick={() => setRejectMemoModal({ open: true, requestId: r.id })} />
-                </Tooltip>
-              </>
-            )}
-            {canCreate && isOwner && (r.approval_status === 'PENDING_MEMO' || r.approval_status === 'POSTPONED') && (
-              <Tooltip title="Перенести в черновик с новой датой">
-                <Button type="text" size="small" icon={<ClockCircleOutlined />} style={{ color: '#fa8c16' }}
-                  onClick={() => setMoveDraftModal({ open: true, requestId: r.id })} />
-              </Tooltip>
-            )}
-            {canGateApprove && r.approval_status === 'PENDING_GATE' && (
-              <>
-                <Tooltip title="Разрешить экстренный платёж">
-                  <Button type="text" size="small" icon={<CheckOutlined />} style={{ color: '#52c41a' }}
-                    onClick={() => setGateModal({ open: true, type: 'approve', requestId: r.id, violation: r.gate_reason || '' })} />
-                </Tooltip>
-                <Tooltip title="Отклонить">
-                  <Button type="text" size="small" icon={<CloseOutlined />} danger
-                    onClick={() => setGateModal({ open: true, type: 'reject', requestId: r.id, violation: r.gate_reason || '' })} />
-                </Tooltip>
-              </>
-            )}
+          <Space size={4} wrap={false}>
+            {renderPrimaryAction(primaryAction)}
+            {renderSecondaryActions(secondaryActions)}
           </Space>
         );
       },
     },
   };
-
   const columns = buildColumns(colSettings, COLUMN_RENDERERS, isGrouped);
 
   // ─── Рендер ───────────────────────────────────────────────────────────────
@@ -1271,6 +1317,13 @@ const PaymentRegistry: React.FC = () => {
               if (r.approval_status === 'SUSPENDED') return 'row-suspended';
               return r.special_order ? 'row-special' : '';
             }}
+            onRow={(record) => ({
+              onClick: (event) => {
+                if (isGrouped || isGroupRow(record) || shouldIgnoreRowClick(event)) return;
+                setViewingRequest(record);
+              },
+              style: isGrouped || isGroupRow(record) ? undefined : { cursor: 'pointer' },
+            })}
             expandable={isGrouped ? {
               expandedRowKeys: expandedKeys,
               onExpand: (expanded, record) => {
@@ -1411,10 +1464,10 @@ const PaymentRegistry: React.FC = () => {
         )}
       </Modal>
 
-      {/* Модалка подвешивания */}
+      {/* Модалка отложения */}
       <ReasonModal
         open={suspendModal.open}
-        title="Подвесить заявку"
+        title="Отложить заявку"
         onCancel={() => setSuspendModal({ open: false, requestId: '' })}
         onOk={(reason) => {
           handleSuspend(suspendModal.requestId, reason);
@@ -1422,13 +1475,13 @@ const PaymentRegistry: React.FC = () => {
         }}
       />
 
-      {/* Модалка переноса подвешенной заявки */}
+      {/* Модалка переноса отложенной заявки */}
       <Modal
         open={unsuspendModal.open}
-        title="Перенести подвешенную заявку"
+        title="Вернуть отложенную заявку на согласование"
         onCancel={() => { setUnsuspendModal({ open: false, requestId: '' }); setUnsuspendDate(null); }}
         onOk={handleUnsuspend}
-        okText="Перенести" cancelText="Отменить"
+        okText="Вернуть" cancelText="Отменить"
       >
         <div style={{ marginBottom: 8, color: '#8c8c8c' }}>
           Укажите новую дату оплаты. Заявка вернётся в статус «Черновик».
@@ -1495,13 +1548,13 @@ const PaymentRegistry: React.FC = () => {
         </div>
       </Modal>
 
-      {/* Модалка разрешения/отклонения шлюза */}
+      {/* Модалка разрешения/отклонения исключения */}
       <ReasonModal
         open={gateModal.open}
         title={
           gateModal.type === 'approve'
-            ? `Разрешить экстренный платёж`
-            : `Отклонить запрос`
+            ? `Разрешить исключение`
+            : `Отклонить исключение`
         }
         onCancel={() => setGateModal(p => ({ ...p, open: false }))}
         onOk={(reason) => {
@@ -1569,9 +1622,9 @@ const PaymentRegistry: React.FC = () => {
               {(r.rejection_reason || r.gate_reason || r.feo_note) && (<>
                 <Divider>Комментарии</Divider>
                 {r.rejection_reason && row('Причина отклонения', <Text type="danger">{r.rejection_reason}</Text>)}
-                {r.gate_reason      && row('Комментарий шлюза',  <Text>{r.gate_reason}</Text>)}
+                {r.gate_reason      && row('Исключение из регламента',  <Text>{r.gate_reason}</Text>)}
                 {r.feo_note         && row('Примечание ФЭО',     <Text>{r.feo_note}</Text>)}
-                {r.gate_approver    && row('Разрешил шлюз',      <Text>{r.gate_approver.full_name}</Text>)}
+                {r.gate_approver    && row('Разрешил исключение',      <Text>{r.gate_approver.full_name}</Text>)}
               </>)}
 
               {/* Блок: История событий */}
