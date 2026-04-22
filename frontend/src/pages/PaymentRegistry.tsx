@@ -120,10 +120,56 @@ const smallWrapTextCellStyle: React.CSSProperties = { ...wrapTextCellStyle, ...s
 const smallTextCellStyle: React.CSSProperties = { ...textCellStyle, ...smallCellStyle };
 const nestedCellDividerStyle: React.CSSProperties = {
   borderTop: '1px solid #f0f0f0',
-  marginTop: 4,
-  paddingTop: 4,
+  marginTop: 5,
+  paddingTop: 5,
 };
 const SMALL_FONT_COLUMN_KEYS = new Set(['payment_date', 'creator', 'direction', 'counterparty', 'note', 'description', 'amount']);
+const STATUS_COLUMN_KEYS = new Set(['approval_status', 'contract_status', 'budget_item', 'is_budgeted', 'payment_status']);
+const statusCellStyle: React.CSSProperties = {
+  minWidth: 0,
+  display: 'grid',
+  gap: 5,
+  justifyItems: 'center',
+  alignItems: 'center',
+  textAlign: 'center',
+  fontSize: 12,
+};
+const pairedCellStyle: React.CSSProperties = {
+  minWidth: 0,
+  display: 'grid',
+  gap: 4,
+  justifyItems: 'start',
+  alignItems: 'start',
+  textAlign: 'left',
+  fontSize: 12,
+};
+const statusTagStyle: React.CSSProperties = {
+  minHeight: 20,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  marginInlineEnd: 0,
+  fontSize: 12,
+  lineHeight: 1.2,
+};
+const secondaryStatusStyle: React.CSSProperties = {
+  ...statusTagStyle,
+  minWidth: 104,
+};
+const statusSelectStyle: React.CSSProperties = {
+  width: 128,
+  fontSize: 12,
+};
+
+const nativeTitleText = (value: string | null | undefined, style: React.CSSProperties = textCellStyle) => (
+  value
+    ? <span title={value} style={style}>{value}</span>
+    : <Text type="secondary">—</Text>
+);
+
+const statusTag = (label: React.ReactNode, color: string, secondary = false) => (
+  <Tag color={color} style={secondary ? secondaryStatusStyle : statusTagStyle}>{label}</Tag>
+);
 
 function buildColumns(settings: ColSetting[], renderers: Record<string, any>, isGrouped: boolean): any[] {
   const secondaryKeys = new Set(settings.filter(s => s.pairedWith).map(s => s.pairedWith!));
@@ -140,20 +186,25 @@ function buildColumns(settings: ColSetting[], renderers: Record<string, any>, is
         const secDef = COLUMN_DEFS.find(d => d.key === s.pairedWith);
         const secRdr = renderers[s.pairedWith];
         const secVisible = settings.find(ss => ss.key === s.pairedWith)?.visible;
+        const isStatusPair = STATUS_COLUMN_KEYS.has(s.key) || STATUS_COLUMN_KEYS.has(s.pairedWith);
         if (secDef && secRdr && secVisible) {
           return {
             title: (
-              <span style={SMALL_FONT_COLUMN_KEYS.has(s.key) || SMALL_FONT_COLUMN_KEYS.has(s.pairedWith) ? smallCellStyle : undefined}>
+              <span style={{
+                ...(SMALL_FONT_COLUMN_KEYS.has(s.key) || SMALL_FONT_COLUMN_KEYS.has(s.pairedWith) ? smallCellStyle : {}),
+                ...(isStatusPair ? { display: 'block', textAlign: 'center' as const } : {}),
+              }}>
                 {def.label} / {secDef.label}
               </span>
             ),
             key: s.key,
             dataIndex: rdr.dataIndex,
             width: getRelativeWidth(s.key, settings, secondaryKeys),
+            align: isStatusPair ? 'center' as const : rdr.align,
             render: (v: any, r: any) => (
-              <div style={{ minWidth: 0 }}>
+              <div style={isStatusPair ? statusCellStyle : pairedCellStyle}>
                 <div>{rdr.render(v, r)}</div>
-                <div style={{ ...nestedCellDividerStyle, color: '#888' }}>
+                <div style={{ ...nestedCellDividerStyle, color: '#888', width: '100%', display: 'flex', justifyContent: isStatusPair ? 'center' : 'flex-start' }}>
                   {secRdr.render(r[secRdr.dataIndex ?? ''], r)}
                 </div>
               </div>
@@ -167,7 +218,7 @@ function buildColumns(settings: ColSetting[], renderers: Record<string, any>, is
         dataIndex: rdr.dataIndex,
         width: getRelativeWidth(s.key, settings, secondaryKeys),
         ellipsis: rdr.dataIndex ? rdr.ellipsis : undefined,
-        align: rdr.align,
+        align: STATUS_COLUMN_KEYS.has(s.key) ? 'center' as const : rdr.align,
         sorter: rdr.sorter,
         render: rdr.render,
       };
@@ -212,6 +263,7 @@ const CONTRACT_CONFIG: Record<string, { label: string; color: string }> = {
   'true':  { label: 'Есть',         color: 'green'   },
   'false': { label: 'Нет',          color: 'red'     },
 };
+const MODAL_TOP_STYLE: React.CSSProperties = { top: 24 };
 
 // ─── Вспомогательные компоненты ─────────────────────────────────────────────
 
@@ -225,6 +277,7 @@ const ReasonModal: React.FC<{
       onCancel={() => { setValue(''); onCancel(); }}
       onOk={() => { onOk(value); setValue(''); }}
       okText="Подтвердить" cancelText="Отменить"
+      style={MODAL_TOP_STYLE}
       destroyOnHidden
     >
       <Input.TextArea rows={3} placeholder="Укажите причину (необязательно)"
@@ -274,6 +327,9 @@ const PaymentRegistry: React.FC = () => {
   });
   const [isDayTabbed, setIsDayTabbed]               = useState<boolean>(() => {
     return localStorage.getItem('ui_registry_day_tabs') === 'true';
+  });
+  const [showFilters, setShowFilters]               = useState<boolean>(() => {
+    return localStorage.getItem('ui_registry_show_filters') !== 'false';
   });
   const [expandLevel, setExpandLevel]               = useState<'org' | 'dircat' | 'cat' | 'req'>(() => {
     const saved = localStorage.getItem('ui_registry_expand_level');
@@ -999,7 +1055,7 @@ const PaymentRegistry: React.FC = () => {
       sorter: (a: any, b: any) => (a.organization?.name ?? '').localeCompare(b.organization?.name ?? ''),
       render: (_: any, r: any) => {
         if (isGroupRow(r)) return null;
-        return <Tooltip title={r.organization?.name}><span>{r.organization?.name ?? '—'}</span></Tooltip>;
+        return nativeTitleText(r.organization?.name);
       },
     },
     direction: {
@@ -1007,7 +1063,7 @@ const PaymentRegistry: React.FC = () => {
       sorter: (a: any, b: any) => (a.direction?.name ?? '').localeCompare(b.direction?.name ?? ''),
       render: (_: any, r: any) => {
         if (isGroupRow(r)) return null;
-        return <Tooltip title={r.direction?.name}><span style={smallTextCellStyle}>{r.direction?.name ?? '—'}</span></Tooltip>;
+        return nativeTitleText(r.direction?.name, smallTextCellStyle);
       },
     },
     counterparty: {
@@ -1016,7 +1072,7 @@ const PaymentRegistry: React.FC = () => {
       sorter: (a: any, b: any) => (a.counterparty ?? '').localeCompare(b.counterparty ?? ''),
       render: (v: string, r: any) => {
         if (isGroupRow(r)) return null;
-        return <Tooltip title={v}><span style={smallWrapTextCellStyle}>{v}</span></Tooltip>;
+        return nativeTitleText(v, smallWrapTextCellStyle);
       },
     },
     description: {
@@ -1024,9 +1080,7 @@ const PaymentRegistry: React.FC = () => {
       ellipsis: false,
       render: (v: string, r: any) => {
         if (isGroupRow(r)) return null;
-        return v
-          ? <Tooltip title={v}><Text style={smallWrapTextCellStyle}>{v}</Text></Tooltip>
-          : <Text type="secondary">—</Text>;
+        return nativeTitleText(v, smallWrapTextCellStyle);
       },
     },
     note: {
@@ -1034,9 +1088,7 @@ const PaymentRegistry: React.FC = () => {
       ellipsis: false,
       render: (v: string, r: any) => {
         if (isGroupRow(r)) return null;
-        return v
-          ? <Tooltip title={v}><Text style={smallWrapTextCellStyle}>{v}</Text></Tooltip>
-          : <Text type="secondary">—</Text>;
+        return nativeTitleText(v, smallWrapTextCellStyle);
       },
     },
     creator: {
@@ -1045,7 +1097,7 @@ const PaymentRegistry: React.FC = () => {
       render: (_: any, r: any) => {
         if (isGroupRow(r)) return null;
         return r.creator
-          ? <Tooltip title={r.creator.full_name}><span style={smallTextCellStyle}>{r.creator.full_name}</span></Tooltip>
+          ? nativeTitleText(r.creator.full_name, smallTextCellStyle)
           : <Text type="secondary">—</Text>;
       },
     },
@@ -1056,7 +1108,7 @@ const PaymentRegistry: React.FC = () => {
         if (isGroupRow(r)) return null;
         const cfg = r.budget_item?.category ? CATEGORY_CONFIG[r.budget_item.category] : null;
         return r.budget_item
-          ? <Tag color={cfg?.color ?? 'default'}>{r.budget_item.name}</Tag>
+          ? statusTag(r.budget_item.name, cfg?.color ?? 'default')
           : '—';
       },
     },
@@ -1089,7 +1141,7 @@ const PaymentRegistry: React.FC = () => {
       render: (v: string, r: any) => {
         if (isGroupRow(r)) return null;
         const cfg = APPROVAL_CONFIG[v] ?? { label: v, color: 'default' };
-        return <Tag color={cfg.color}>{cfg.label}</Tag>;
+        return statusTag(cfg.label, cfg.color);
       },
     },
     contract_status: {
@@ -1104,10 +1156,11 @@ const PaymentRegistry: React.FC = () => {
             <Select
               size="small"
               value={key}
-              style={{ width: 145 }}
+              className="registry-status-select"
+              style={statusSelectStyle}
               options={Object.entries(CONTRACT_CONFIG).map(([k, c]) => ({
                 value: k,
-                label: <Tag color={c.color}>{c.label}</Tag>,
+                label: statusTag(c.label, c.color, true),
               }))}
               onChange={(newKey) => {
                 const newVal = newKey === 'null' ? null : newKey === 'true';
@@ -1116,7 +1169,7 @@ const PaymentRegistry: React.FC = () => {
             />
           );
         }
-        return <Tag color={cfg.color}>{cfg.label}</Tag>;
+        return statusTag(cfg.label, cfg.color, true);
       },
     },
     is_budgeted: {
@@ -1131,10 +1184,11 @@ const PaymentRegistry: React.FC = () => {
             <Select
               size="small"
               value={key}
-              style={{ width: 135 }}
+              className="registry-status-select"
+              style={statusSelectStyle}
               options={Object.entries(CONTRACT_CONFIG).map(([k, c]) => ({
                 value: k,
-                label: <Tag color={c.color}>{c.label}</Tag>,
+                label: statusTag(c.label, c.color, true),
               }))}
               onChange={(newKey) => {
                 const newVal = newKey === 'null' ? null : newKey === 'true';
@@ -1143,7 +1197,7 @@ const PaymentRegistry: React.FC = () => {
             />
           );
         }
-        return <Tag color={cfg.color}>{cfg.label}</Tag>;
+        return statusTag(cfg.label, cfg.color, true);
       },
     },
     payment_status: {
@@ -1152,7 +1206,7 @@ const PaymentRegistry: React.FC = () => {
       render: (v: string, r: any) => {
         if (isGroupRow(r)) return null;
         const cfg = PAYMENT_CONFIG[v] ?? { label: v, color: 'default' };
-        return <Tag color={cfg.color}>{cfg.label}</Tag>;
+        return statusTag(cfg.label, cfg.color);
       },
     },
     special_icon: {
@@ -1329,6 +1383,7 @@ const PaymentRegistry: React.FC = () => {
           size="small"
           bordered
           tableLayout="fixed"
+          sticky={{ offsetHeader: 0 }}
           pagination={isGrouped ? false : { pageSize: 20, showTotal: total => `Всего: ${total}` }}
           rowClassName={(r) => {
             if (r._type === 'org')      return 'row-group-org';
@@ -1369,6 +1424,18 @@ const PaymentRegistry: React.FC = () => {
       <Row justify="space-between" align="middle" style={{ marginBottom: 12 }}>
         <Title level={3} style={{ margin: 0 }}>Реестр платежных заявок</Title>
         <Space>
+          <Space size={6}>
+            <Text type="secondary" style={{ fontSize: 13 }}>Фильтры</Text>
+            <Switch
+              aria-label="Фильтры"
+              checked={showFilters}
+              onChange={v => {
+                setShowFilters(v);
+                localStorage.setItem('ui_registry_show_filters', String(v));
+              }}
+              size="small"
+            />
+          </Space>
           <Space size={6}>
             <Text type="secondary" style={{ fontSize: 13 }}>По дням</Text>
             <Switch
@@ -1412,6 +1479,7 @@ const PaymentRegistry: React.FC = () => {
       </Row>
 
       {/* Фильтры */}
+      {showFilters && (
       <Card size="small" style={{ marginBottom: 12 }}>
         <Row gutter={[8, 8]} align="middle" wrap>
           <Col>
@@ -1539,6 +1607,7 @@ const PaymentRegistry: React.FC = () => {
           </Col>
         </Row>
       </Card>
+      )}
 
       {/* Таблица */}
       {registryTable}
@@ -1569,6 +1638,7 @@ const PaymentRegistry: React.FC = () => {
         cancelText="Отменить"
         confirmLoading={formLoading}
         width={640}
+        style={MODAL_TOP_STYLE}
         destroyOnHidden
       >
         <Form form={form} layout="vertical" onFinish={handleFormSubmit} style={{ marginTop: 8 }}>
@@ -1672,7 +1742,7 @@ const PaymentRegistry: React.FC = () => {
         footer={null}
         onCancel={() => { URL.revokeObjectURL(filePreview?.url ?? ''); setFilePreview(null); }}
         width={800}
-        centered
+        style={MODAL_TOP_STYLE}
         destroyOnHidden
       >
         {filePreview && (
@@ -1699,6 +1769,7 @@ const PaymentRegistry: React.FC = () => {
         onCancel={() => { setUnsuspendModal({ open: false, requestId: '' }); setUnsuspendDate(null); }}
         onOk={handleUnsuspend}
         okText="Вернуть" cancelText="Отменить"
+        style={MODAL_TOP_STYLE}
         destroyOnHidden
       >
         <div style={{ marginBottom: 8, color: '#8c8c8c' }}>
@@ -1730,6 +1801,7 @@ const PaymentRegistry: React.FC = () => {
         onCancel={() => { setMoveDraftModal({ open: false, requestId: '' }); setMoveDraftDate(null); }}
         onOk={handleMoveToDraft}
         okText="Перенести" cancelText="Отменить"
+        style={MODAL_TOP_STYLE}
         destroyOnHidden
       >
         <div style={{ marginBottom: 8, color: '#8c8c8c' }}>
@@ -1751,6 +1823,7 @@ const PaymentRegistry: React.FC = () => {
         onCancel={() => { setPostponeModal({ open: false, requestId: '' }); setPostponeDate(null); setPostponeReason(''); }}
         onOk={handlePostpone}
         okText="Перенести" cancelText="Отменить"
+        style={MODAL_TOP_STYLE}
         destroyOnHidden
       >
         <div style={{ marginBottom: 12, color: '#8c8c8c' }}>
@@ -1794,7 +1867,7 @@ const PaymentRegistry: React.FC = () => {
         footer={<Button onClick={() => setViewingRequest(null)}>Закрыть</Button>}
         title={`Заявка № ${viewingRequest?.request_number ?? viewingRequest?.id?.slice(0, 8).toUpperCase() ?? ''}`}
         width={680}
-        centered
+        style={MODAL_TOP_STYLE}
         destroyOnHidden
       >
         {viewingRequest && (() => {
@@ -1903,6 +1976,19 @@ const PaymentRegistry: React.FC = () => {
         .row-marked-deletion td .ant-btn { text-decoration: none; }
         .ant-table-wrapper .ant-table-content { overflow-x: hidden !important; overflow-y: visible !important; }
         .ant-table-wrapper .ant-table-content::-webkit-scrollbar { display: none; }
+        .registry-status-select .ant-select-selector {
+          height: 24px !important;
+          min-height: 24px !important;
+          font-size: 12px !important;
+          display: flex;
+          align-items: center;
+        }
+        .registry-status-select .ant-select-selection-item {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 12px !important;
+        }
       `}</style>
     </div>
   );

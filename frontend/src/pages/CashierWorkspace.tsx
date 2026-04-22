@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import {
   App as AntdApp, Button, Card, Col, DatePicker, Dropdown, Input, InputNumber,
-  Modal, Row, Select, Space, Table, Tag, Timeline, Tooltip, Typography, Tabs,
+  Modal, Row, Select, Space, Switch, Table, Tag, Timeline, Tooltip, Typography, Tabs,
 } from 'antd';
 import type { MenuProps } from 'antd';
 import {
@@ -33,6 +33,7 @@ const CONTRACT_CONFIG: Record<string, { label: string; color: string }> = {
   'true': { label: 'Есть', color: 'green' },
   'false': { label: 'Нет', color: 'red' },
 };
+const MODAL_TOP_STYLE: React.CSSProperties = { top: 24 };
 
 const HISTORY_COLOR: Record<string, string> = {
   SUSPENDED: 'red',
@@ -130,10 +131,52 @@ const smallWrapTextCellStyle: React.CSSProperties = { ...wrapTextCellStyle, ...s
 const smallTextCellStyle: React.CSSProperties = { ...textCellStyle, ...smallCellStyle };
 const nestedCellDividerStyle: React.CSSProperties = {
   borderTop: '1px solid #f0f0f0',
-  marginTop: 4,
-  paddingTop: 4,
+  marginTop: 5,
+  paddingTop: 5,
 };
 const SMALL_FONT_COLUMN_KEYS = new Set(['payment_date', 'creator', 'direction', 'counterparty', 'note', 'description', 'amount']);
+const STATUS_COLUMN_KEYS = new Set(['budget_item', 'payment_status', 'contract_status']);
+const statusCellStyle: React.CSSProperties = {
+  minWidth: 0,
+  display: 'grid',
+  gap: 5,
+  justifyItems: 'center',
+  alignItems: 'center',
+  textAlign: 'center',
+  fontSize: 12,
+};
+const statusTagStyle: React.CSSProperties = {
+  minHeight: 20,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  marginInlineEnd: 0,
+  fontSize: 12,
+  lineHeight: 1.2,
+};
+const secondaryStatusStyle: React.CSSProperties = {
+  ...statusTagStyle,
+  minWidth: 104,
+};
+const centeredPairCellStyle: React.CSSProperties = {
+  minWidth: 0,
+  display: 'grid',
+  gap: 4,
+  justifyItems: 'start',
+  alignItems: 'start',
+  textAlign: 'left',
+  fontSize: 12,
+};
+
+const nativeTitleText = (value: string | null | undefined, style: React.CSSProperties = textCellStyle) => (
+  value
+    ? <span title={value} style={style}>{value}</span>
+    : <Text type="secondary">—</Text>
+);
+
+const statusTag = (label: React.ReactNode, color: string, secondary = false) => (
+  <Tag color={color} style={secondary ? secondaryStatusStyle : statusTagStyle}>{label}</Tag>
+);
 
 const CashierWorkspace: React.FC = () => {
   const { message: messageApi } = AntdApp.useApp();
@@ -153,6 +196,9 @@ const CashierWorkspace: React.FC = () => {
   const [filterBudgetItem, setFilterBudgetItem] = useState<string | undefined>();
   const [filterAmountFrom, setFilterAmountFrom] = useState<number | undefined>();
   const [filterAmountTo, setFilterAmountTo] = useState<number | undefined>();
+  const [showFilters, setShowFilters] = useState<boolean>(() => {
+    return localStorage.getItem('ui_cashier_show_filters') !== 'false';
+  });
   const [colSettings, setColSettings] = useState<ColSetting[]>(() => loadColSettings(user?.id));
   const [colDrawerOpen, setColDrawerOpen] = useState(false);
   const [viewingRequest, setViewingRequest] = useState<any>(null);
@@ -260,27 +306,27 @@ const CashierWorkspace: React.FC = () => {
     },
     organization: {
       sorter: (a: any, b: any) => (a.organization?.name ?? '').localeCompare(b.organization?.name ?? ''),
-      render: (_: any, r: any) => <Tooltip title={r.organization?.name}><span>{r.organization?.name ?? '—'}</span></Tooltip>,
+      render: (_: any, r: any) => nativeTitleText(r.organization?.name),
     },
     direction: {
       sorter: (a: any, b: any) => (a.direction?.name ?? '').localeCompare(b.direction?.name ?? ''),
-      render: (_: any, r: any) => <Tooltip title={r.direction?.name}><span style={smallTextCellStyle}>{r.direction?.name ?? '—'}</span></Tooltip>,
+      render: (_: any, r: any) => nativeTitleText(r.direction?.name, smallTextCellStyle),
     },
     counterparty: {
       dataIndex: 'counterparty',
       ellipsis: false,
       sorter: (a: any, b: any) => (a.counterparty ?? '').localeCompare(b.counterparty ?? ''),
-      render: (v: string) => v ? <Tooltip title={v}><span style={smallWrapTextCellStyle}>{v}</span></Tooltip> : <Text type="secondary">—</Text>,
+      render: (v: string) => nativeTitleText(v, smallWrapTextCellStyle),
     },
     description: {
       dataIndex: 'description',
       ellipsis: false,
-      render: (v: string) => v ? <Tooltip title={v}><span style={smallWrapTextCellStyle}>{v}</span></Tooltip> : <Text type="secondary">—</Text>,
+      render: (v: string) => nativeTitleText(v, smallWrapTextCellStyle),
     },
     note: {
       dataIndex: 'note',
       ellipsis: false,
-      render: (v: string) => v ? <Tooltip title={v}><span style={smallWrapTextCellStyle}>{v}</span></Tooltip> : <Text type="secondary">—</Text>,
+      render: (v: string) => nativeTitleText(v, smallWrapTextCellStyle),
     },
     creator: {
       sorter: (a: any, b: any) => (a.creator?.full_name ?? '').localeCompare(b.creator?.full_name ?? ''),
@@ -290,7 +336,7 @@ const CashierWorkspace: React.FC = () => {
       sorter: (a: any, b: any) => (a.budget_item?.name ?? '').localeCompare(b.budget_item?.name ?? ''),
       render: (_: any, r: any) => {
         const cfg = r.budget_item?.category ? CATEGORY_CONFIG[r.budget_item.category] : null;
-        return r.budget_item ? <Tag color={cfg?.color ?? 'default'}>{r.budget_item.name}</Tag> : '—';
+        return r.budget_item ? statusTag(r.budget_item.name, cfg?.color ?? 'default') : '—';
       },
     },
     amount: {
@@ -304,7 +350,7 @@ const CashierWorkspace: React.FC = () => {
       sorter: (a: any, b: any) => (a.payment_status ?? '').localeCompare(b.payment_status ?? ''),
       render: (v: string) => {
         const cfg = PAYMENT_CONFIG[v] ?? { label: v, color: 'default' };
-        return <Tag color={cfg.color}>{cfg.label}</Tag>;
+        return statusTag(cfg.label, cfg.color);
       },
     },
     contract_status: {
@@ -312,7 +358,7 @@ const CashierWorkspace: React.FC = () => {
       sorter: (a: any, b: any) => CONTRACT_KEY(a.contract_status).localeCompare(CONTRACT_KEY(b.contract_status)),
       render: (v: boolean | null) => {
         const cfg = CONTRACT_CONFIG[CONTRACT_KEY(v)];
-        return <Tag color={cfg.color}>{cfg.label}</Tag>;
+        return statusTag(cfg.label, cfg.color, true);
       },
     },
     actions: { align: 'center' as const, render: (_: any, r: any) => renderActions(r) },
@@ -335,10 +381,14 @@ const CashierWorkspace: React.FC = () => {
           const secondaryDef = COLUMN_DEFS.find(d => d.key === s.pairedWith);
           const secondaryRenderer = columnRenderers[s.pairedWith];
           const secondaryVisible = colSettings.find(item => item.key === s.pairedWith)?.visible;
+          const isStatusPair = STATUS_COLUMN_KEYS.has(s.key) || STATUS_COLUMN_KEYS.has(s.pairedWith);
           if (secondaryDef && secondaryRenderer && secondaryVisible) {
             return {
               title: (
-                <span style={SMALL_FONT_COLUMN_KEYS.has(s.key) || SMALL_FONT_COLUMN_KEYS.has(s.pairedWith) ? smallCellStyle : undefined}>
+                <span style={{
+                  ...(SMALL_FONT_COLUMN_KEYS.has(s.key) || SMALL_FONT_COLUMN_KEYS.has(s.pairedWith) ? smallCellStyle : {}),
+                  ...(isStatusPair ? { display: 'block', textAlign: 'center' as const } : {}),
+                }}>
                   {def.label} / {secondaryDef.label}
                 </span>
               ),
@@ -346,12 +396,12 @@ const CashierWorkspace: React.FC = () => {
               dataIndex: renderer.dataIndex,
               width: getRelativeWidth(s.key, colSettings, secondaryColumnKeys),
               ellipsis: renderer.ellipsis && secondaryRenderer.ellipsis,
-              align: renderer.align,
+              align: isStatusPair ? 'center' as const : renderer.align,
               sorter: renderer.sorter,
               render: (v: any, r: any) => (
-                <div style={{ minWidth: 0 }}>
+                <div style={isStatusPair ? statusCellStyle : centeredPairCellStyle}>
                   <div>{renderer.render ? renderer.render(v, r) : v}</div>
-                  <div style={nestedCellDividerStyle}>
+                  <div style={{ ...nestedCellDividerStyle, width: '100%', display: 'flex', justifyContent: isStatusPair ? 'center' : 'flex-start' }}>
                     {secondaryRenderer.render
                       ? secondaryRenderer.render(r[secondaryRenderer.dataIndex ?? ''], r)
                       : r[secondaryRenderer.dataIndex ?? s.pairedWith!]}
@@ -367,7 +417,7 @@ const CashierWorkspace: React.FC = () => {
           dataIndex: renderer.dataIndex,
           width: getRelativeWidth(s.key, colSettings, secondaryColumnKeys),
           ellipsis: renderer.ellipsis,
-          align: renderer.align,
+          align: STATUS_COLUMN_KEYS.has(s.key) ? 'center' as const : renderer.align,
           sorter: renderer.sorter,
           render: renderer.render,
         };
@@ -436,6 +486,7 @@ const CashierWorkspace: React.FC = () => {
               size="small"
               bordered
               tableLayout="fixed"
+              sticky={{ offsetHeader: 0 }}
               pagination={{ pageSize: 20, showTotal: total => `Всего: ${total}` }}
               onRow={(record) => ({
                 onClick: (event) => {
@@ -461,6 +512,18 @@ const CashierWorkspace: React.FC = () => {
       <Row justify="space-between" align="middle" style={{ marginBottom: 12 }}>
         <Title level={3} style={{ margin: 0 }}>Рабочее пространство казначея</Title>
         <Space>
+          <Space size={6}>
+            <Text type="secondary" style={{ fontSize: 13 }}>Фильтры</Text>
+            <Switch
+              aria-label="Фильтры"
+              checked={showFilters}
+              onChange={v => {
+                setShowFilters(v);
+                localStorage.setItem('ui_cashier_show_filters', String(v));
+              }}
+              size="small"
+            />
+          </Space>
           {canExport && (
             <Button icon={<DownloadOutlined />} onClick={exportCurrentView} disabled={!currentRows.length}>
               Выгрузить Excel
@@ -472,6 +535,7 @@ const CashierWorkspace: React.FC = () => {
         </Space>
       </Row>
 
+      {showFilters && (
       <Card size="small" style={{ marginBottom: 12 }}>
         <Row gutter={[8, 8]} align="middle" wrap>
           <Col>
@@ -519,6 +583,7 @@ const CashierWorkspace: React.FC = () => {
           </Col>
         </Row>
       </Card>
+      )}
 
       {cashierTable}
 
@@ -536,7 +601,7 @@ const CashierWorkspace: React.FC = () => {
         footer={<Button onClick={() => setViewingRequest(null)}>Закрыть</Button>}
         title={`Заявка № ${viewingRequest?.request_number ?? viewingRequest?.id?.slice(0, 8).toUpperCase() ?? ''}`}
         width={680}
-        centered
+        style={MODAL_TOP_STYLE}
         destroyOnHidden
       >
         {viewingRequest && (
@@ -569,6 +634,10 @@ const CashierWorkspace: React.FC = () => {
           </div>
         )}
       </Modal>
+      <style>{`
+        .ant-table-wrapper .ant-table-content { overflow-x: hidden !important; overflow-y: visible !important; }
+        .ant-table-wrapper .ant-table-content::-webkit-scrollbar { display: none; }
+      `}</style>
     </div>
   );
 };
