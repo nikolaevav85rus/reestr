@@ -88,6 +88,20 @@ const textCellStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
+const wrapTextCellStyle: React.CSSProperties = {
+  display: 'block',
+  maxWidth: '100%',
+  whiteSpace: 'normal',
+  overflowWrap: 'break-word',
+  wordBreak: 'normal',
+  lineHeight: 1.35,
+};
+
+const smallCellStyle: React.CSSProperties = { fontSize: 13 };
+const smallWrapTextCellStyle: React.CSSProperties = { ...wrapTextCellStyle, ...smallCellStyle };
+const smallTextCellStyle: React.CSSProperties = { ...textCellStyle, ...smallCellStyle };
+const SMALL_FONT_COLUMN_KEYS = new Set(['payment_date', 'creator', 'direction', 'counterparty', 'note', 'description', 'amount']);
+
 function buildColumns(settings: ColSetting[], renderers: Record<string, any>, isGrouped: boolean): any[] {
   const secondaryKeys = new Set(settings.filter(s => s.pairedWith).map(s => s.pairedWith!));
   return settings
@@ -105,15 +119,18 @@ function buildColumns(settings: ColSetting[], renderers: Record<string, any>, is
         const secVisible = settings.find(ss => ss.key === s.pairedWith)?.visible;
         if (secDef && secRdr && secVisible) {
           return {
-            title: `${def.label} / ${secDef.label}`,
+            title: (
+              <span style={SMALL_FONT_COLUMN_KEYS.has(s.key) || SMALL_FONT_COLUMN_KEYS.has(s.pairedWith) ? smallCellStyle : undefined}>
+                {def.label} / {secDef.label}
+              </span>
+            ),
             key: s.key,
             dataIndex: rdr.dataIndex,
             width: s.width,
-            ellipsis: true,
             render: (v: any, r: any) => (
               <div style={{ minWidth: 0 }}>
-                <div style={textCellStyle}>{rdr.render(v, r)}</div>
-                <div style={{ ...textCellStyle, color: '#888', marginTop: 2 }}>
+                <div>{rdr.render(v, r)}</div>
+                <div style={{ color: '#888', marginTop: 2 }}>
                   {secRdr.render(r[secRdr.dataIndex ?? ''], r)}
                 </div>
               </div>
@@ -122,7 +139,7 @@ function buildColumns(settings: ColSetting[], renderers: Record<string, any>, is
         }
       }
       return {
-        title: def.label,
+        title: <span style={SMALL_FONT_COLUMN_KEYS.has(s.key) ? smallCellStyle : undefined}>{def.label}</span>,
         key: s.key,
         dataIndex: rdr.dataIndex,
         width: s.width,
@@ -934,7 +951,7 @@ const PaymentRegistry: React.FC = () => {
           );
         }
         return v
-          ? <Button type="link" style={{ padding: 0, height: 'auto', fontWeight: 600 }}
+          ? <Button type="link" style={{ padding: 0, height: 'auto', fontWeight: 600, ...smallCellStyle }}
               onClick={() => setViewingRequest(r)}>
               {new Date(v + 'T00:00:00').toLocaleDateString('ru-RU')}
             </Button>
@@ -954,35 +971,35 @@ const PaymentRegistry: React.FC = () => {
       sorter: (a: any, b: any) => (a.direction?.name ?? '').localeCompare(b.direction?.name ?? ''),
       render: (_: any, r: any) => {
         if (isGroupRow(r)) return null;
-        return <Tooltip title={r.direction?.name}><span>{r.direction?.name ?? '—'}</span></Tooltip>;
+        return <Tooltip title={r.direction?.name}><span style={smallTextCellStyle}>{r.direction?.name ?? '—'}</span></Tooltip>;
       },
     },
     counterparty: {
       dataIndex: 'counterparty',
-      ellipsis: true,
+      ellipsis: false,
       sorter: (a: any, b: any) => (a.counterparty ?? '').localeCompare(b.counterparty ?? ''),
       render: (v: string, r: any) => {
         if (isGroupRow(r)) return null;
-        return <Tooltip title={v}><span style={textCellStyle}>{v}</span></Tooltip>;
+        return <Tooltip title={v}><span style={smallWrapTextCellStyle}>{v}</span></Tooltip>;
       },
     },
     description: {
       dataIndex: 'description',
-      ellipsis: true,
+      ellipsis: false,
       render: (v: string, r: any) => {
         if (isGroupRow(r)) return null;
         return v
-          ? <Tooltip title={v}><Text ellipsis style={textCellStyle}>{v}</Text></Tooltip>
+          ? <Tooltip title={v}><Text style={smallWrapTextCellStyle}>{v}</Text></Tooltip>
           : <Text type="secondary">—</Text>;
       },
     },
     note: {
       dataIndex: 'note',
-      ellipsis: true,
+      ellipsis: false,
       render: (v: string, r: any) => {
         if (isGroupRow(r)) return null;
         return v
-          ? <Tooltip title={v}><Text ellipsis style={textCellStyle}>{v}</Text></Tooltip>
+          ? <Tooltip title={v}><Text style={smallWrapTextCellStyle}>{v}</Text></Tooltip>
           : <Text type="secondary">—</Text>;
       },
     },
@@ -992,7 +1009,7 @@ const PaymentRegistry: React.FC = () => {
       render: (_: any, r: any) => {
         if (isGroupRow(r)) return null;
         return r.creator
-          ? <Tooltip title={r.creator.full_name}><span>{r.creator.full_name}</span></Tooltip>
+          ? <Tooltip title={r.creator.full_name}><span style={smallTextCellStyle}>{r.creator.full_name}</span></Tooltip>
           : <Text type="secondary">—</Text>;
       },
     },
@@ -1027,7 +1044,7 @@ const PaymentRegistry: React.FC = () => {
             {v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽
           </Text>
         );
-        return <Text strong>{v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽</Text>;
+        return <Text strong style={smallCellStyle}>{v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽</Text>;
       },
     },
     approval_status: {

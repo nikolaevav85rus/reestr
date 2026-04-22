@@ -100,6 +100,20 @@ const textCellStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
 };
 
+const wrapTextCellStyle: React.CSSProperties = {
+  display: 'block',
+  maxWidth: '100%',
+  whiteSpace: 'normal',
+  overflowWrap: 'break-word',
+  wordBreak: 'normal',
+  lineHeight: 1.35,
+};
+
+const smallCellStyle: React.CSSProperties = { fontSize: 13 };
+const smallWrapTextCellStyle: React.CSSProperties = { ...wrapTextCellStyle, ...smallCellStyle };
+const smallTextCellStyle: React.CSSProperties = { ...textCellStyle, ...smallCellStyle };
+const SMALL_FONT_COLUMN_KEYS = new Set(['payment_date', 'creator', 'direction', 'counterparty', 'note', 'description', 'amount']);
+
 const CashierWorkspace: React.FC = () => {
   const { message: messageApi } = AntdApp.useApp();
   const user = useAuthStore(s => s.user);
@@ -221,7 +235,7 @@ const CashierWorkspace: React.FC = () => {
     payment_date: {
       dataIndex: 'payment_date',
       sorter: (a: any, b: any) => (a.payment_date ?? '').localeCompare(b.payment_date ?? ''),
-      render: (v: string) => v ? formatDateRu(v) : <Text type="secondary">—</Text>,
+      render: (v: string) => v ? <span style={smallTextCellStyle}>{formatDateRu(v)}</span> : <Text type="secondary">—</Text>,
     },
     organization: {
       sorter: (a: any, b: any) => (a.organization?.name ?? '').localeCompare(b.organization?.name ?? ''),
@@ -229,27 +243,27 @@ const CashierWorkspace: React.FC = () => {
     },
     direction: {
       sorter: (a: any, b: any) => (a.direction?.name ?? '').localeCompare(b.direction?.name ?? ''),
-      render: (_: any, r: any) => <Tooltip title={r.direction?.name}><span>{r.direction?.name ?? '—'}</span></Tooltip>,
+      render: (_: any, r: any) => <Tooltip title={r.direction?.name}><span style={smallTextCellStyle}>{r.direction?.name ?? '—'}</span></Tooltip>,
     },
     counterparty: {
       dataIndex: 'counterparty',
-      ellipsis: true,
+      ellipsis: false,
       sorter: (a: any, b: any) => (a.counterparty ?? '').localeCompare(b.counterparty ?? ''),
-      render: (v: string) => v ? <Tooltip title={v}><span style={textCellStyle}>{v}</span></Tooltip> : <Text type="secondary">—</Text>,
+      render: (v: string) => v ? <Tooltip title={v}><span style={smallWrapTextCellStyle}>{v}</span></Tooltip> : <Text type="secondary">—</Text>,
     },
     description: {
       dataIndex: 'description',
-      ellipsis: true,
-      render: (v: string) => v ? <Tooltip title={v}><span style={textCellStyle}>{v}</span></Tooltip> : <Text type="secondary">—</Text>,
+      ellipsis: false,
+      render: (v: string) => v ? <Tooltip title={v}><span style={smallWrapTextCellStyle}>{v}</span></Tooltip> : <Text type="secondary">—</Text>,
     },
     note: {
       dataIndex: 'note',
-      ellipsis: true,
-      render: (v: string) => v ? <Tooltip title={v}><span style={textCellStyle}>{v}</span></Tooltip> : <Text type="secondary">—</Text>,
+      ellipsis: false,
+      render: (v: string) => v ? <Tooltip title={v}><span style={smallWrapTextCellStyle}>{v}</span></Tooltip> : <Text type="secondary">—</Text>,
     },
     creator: {
       sorter: (a: any, b: any) => (a.creator?.full_name ?? '').localeCompare(b.creator?.full_name ?? ''),
-      render: (_: any, r: any) => r.creator?.full_name ?? <Text type="secondary">—</Text>,
+      render: (_: any, r: any) => r.creator?.full_name ? <span style={smallTextCellStyle}>{r.creator.full_name}</span> : <Text type="secondary">—</Text>,
     },
     budget_item: {
       sorter: (a: any, b: any) => (a.budget_item?.name ?? '').localeCompare(b.budget_item?.name ?? ''),
@@ -262,7 +276,7 @@ const CashierWorkspace: React.FC = () => {
       dataIndex: 'amount',
       align: 'right' as const,
       sorter: (a: any, b: any) => a.amount - b.amount,
-      render: (v: number) => <Text strong>{v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽</Text>,
+      render: (v: number) => <Text strong style={smallCellStyle}>{v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽</Text>,
     },
     payment_status: {
       dataIndex: 'payment_status',
@@ -302,17 +316,21 @@ const CashierWorkspace: React.FC = () => {
         const secondaryVisible = colSettings.find(item => item.key === s.pairedWith)?.visible;
         if (secondaryDef && secondaryRenderer && secondaryVisible) {
           return {
-            title: `${def.label} / ${secondaryDef.label}`,
+            title: (
+              <span style={SMALL_FONT_COLUMN_KEYS.has(s.key) || SMALL_FONT_COLUMN_KEYS.has(s.pairedWith) ? smallCellStyle : undefined}>
+                {def.label} / {secondaryDef.label}
+              </span>
+            ),
             key: s.key,
             dataIndex: renderer.dataIndex,
             width: s.width,
-            ellipsis: true,
+            ellipsis: renderer.ellipsis && secondaryRenderer.ellipsis,
             align: renderer.align,
             sorter: renderer.sorter,
             render: (v: any, r: any) => (
               <div style={{ minWidth: 0 }}>
-                <div style={textCellStyle}>{renderer.render ? renderer.render(v, r) : v}</div>
-                <div style={{ ...textCellStyle, color: '#888', marginTop: 2 }}>
+                <div>{renderer.render ? renderer.render(v, r) : v}</div>
+                <div style={{ color: '#888', marginTop: 2 }}>
                   {secondaryRenderer.render
                     ? secondaryRenderer.render(r[secondaryRenderer.dataIndex ?? ''], r)
                     : r[secondaryRenderer.dataIndex ?? s.pairedWith!]}
@@ -322,7 +340,16 @@ const CashierWorkspace: React.FC = () => {
           };
         }
       }
-      return { title: def.label, key: s.key, dataIndex: renderer.dataIndex, width: s.width, ellipsis: renderer.ellipsis, align: renderer.align, sorter: renderer.sorter, render: renderer.render };
+      return {
+        title: <span style={SMALL_FONT_COLUMN_KEYS.has(s.key) ? smallCellStyle : undefined}>{def.label}</span>,
+        key: s.key,
+        dataIndex: renderer.dataIndex,
+        width: s.width,
+        ellipsis: renderer.ellipsis,
+        align: renderer.align,
+        sorter: renderer.sorter,
+        render: renderer.render,
+      };
     })
     .filter(Boolean) as any[];
 
