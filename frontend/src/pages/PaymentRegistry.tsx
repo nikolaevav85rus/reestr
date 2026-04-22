@@ -118,6 +118,11 @@ const wrapTextCellStyle: React.CSSProperties = {
 const smallCellStyle: React.CSSProperties = { fontSize: 12 };
 const smallWrapTextCellStyle: React.CSSProperties = { ...wrapTextCellStyle, ...smallCellStyle };
 const smallTextCellStyle: React.CSSProperties = { ...textCellStyle, ...smallCellStyle };
+const nestedCellDividerStyle: React.CSSProperties = {
+  borderTop: '1px solid #f0f0f0',
+  marginTop: 4,
+  paddingTop: 4,
+};
 const SMALL_FONT_COLUMN_KEYS = new Set(['payment_date', 'creator', 'direction', 'counterparty', 'note', 'description', 'amount']);
 
 function buildColumns(settings: ColSetting[], renderers: Record<string, any>, isGrouped: boolean): any[] {
@@ -148,7 +153,7 @@ function buildColumns(settings: ColSetting[], renderers: Record<string, any>, is
             render: (v: any, r: any) => (
               <div style={{ minWidth: 0 }}>
                 <div>{rdr.render(v, r)}</div>
-                <div style={{ color: '#888', marginTop: 2 }}>
+                <div style={{ ...nestedCellDividerStyle, color: '#888' }}>
                   {secRdr.render(r[secRdr.dataIndex ?? ''], r)}
                 </div>
               </div>

@@ -128,6 +128,11 @@ const wrapTextCellStyle: React.CSSProperties = {
 const smallCellStyle: React.CSSProperties = { fontSize: 12 };
 const smallWrapTextCellStyle: React.CSSProperties = { ...wrapTextCellStyle, ...smallCellStyle };
 const smallTextCellStyle: React.CSSProperties = { ...textCellStyle, ...smallCellStyle };
+const nestedCellDividerStyle: React.CSSProperties = {
+  borderTop: '1px solid #f0f0f0',
+  marginTop: 4,
+  paddingTop: 4,
+};
 const SMALL_FONT_COLUMN_KEYS = new Set(['payment_date', 'creator', 'direction', 'counterparty', 'note', 'description', 'amount']);
 
 const CashierWorkspace: React.FC = () => {
@@ -346,7 +351,7 @@ const CashierWorkspace: React.FC = () => {
             render: (v: any, r: any) => (
               <div style={{ minWidth: 0 }}>
                 <div>{renderer.render ? renderer.render(v, r) : v}</div>
-                <div style={{ color: '#888', marginTop: 2 }}>
+                <div style={nestedCellDividerStyle}>
                   {secondaryRenderer.render
                     ? secondaryRenderer.render(r[secondaryRenderer.dataIndex ?? ''], r)
                     : r[secondaryRenderer.dataIndex ?? s.pairedWith!]}
