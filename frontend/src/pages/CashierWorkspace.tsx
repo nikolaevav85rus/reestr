@@ -125,7 +125,7 @@ const wrapTextCellStyle: React.CSSProperties = {
   lineHeight: 1.35,
 };
 
-const smallCellStyle: React.CSSProperties = { fontSize: 13 };
+const smallCellStyle: React.CSSProperties = { fontSize: 12 };
 const smallWrapTextCellStyle: React.CSSProperties = { ...wrapTextCellStyle, ...smallCellStyle };
 const smallTextCellStyle: React.CSSProperties = { ...textCellStyle, ...smallCellStyle };
 const SMALL_FONT_COLUMN_KEYS = new Set(['payment_date', 'creator', 'direction', 'counterparty', 'note', 'description', 'amount']);

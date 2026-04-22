@@ -115,7 +115,7 @@ const wrapTextCellStyle: React.CSSProperties = {
   lineHeight: 1.35,
 };
 
-const smallCellStyle: React.CSSProperties = { fontSize: 13 };
+const smallCellStyle: React.CSSProperties = { fontSize: 12 };
 const smallWrapTextCellStyle: React.CSSProperties = { ...wrapTextCellStyle, ...smallCellStyle };
 const smallTextCellStyle: React.CSSProperties = { ...textCellStyle, ...smallCellStyle };
 const SMALL_FONT_COLUMN_KEYS = new Set(['payment_date', 'creator', 'direction', 'counterparty', 'note', 'description', 'amount']);
@@ -958,7 +958,7 @@ const PaymentRegistry: React.FC = () => {
       sorter: (a: any, b: any) => (a.payment_date ?? '').localeCompare(b.payment_date ?? ''),
       render: (v: string, r: any) => {
         if (r._type === 'org') return (
-          <Text strong style={{ fontSize: 13 }}>
+          <Text strong style={{ fontSize: 12 }}>
             {r._name}
             <Text type="secondary" style={{ fontWeight: 'normal', fontSize: 12, marginLeft: 8 }}>
               ({r._count} {r._count === 1 ? 'заявка' : r._count < 5 ? 'заявки' : 'заявок'})
@@ -1060,17 +1060,17 @@ const PaymentRegistry: React.FC = () => {
       sorter: (a: any, b: any) => a.amount - b.amount,
       render: (v: number, r: any) => {
         if (r._type === 'org') return (
-          <Text strong style={{ color: '#1677ff' }}>
+          <Text strong style={{ color: '#1677ff', fontSize: 12 }}>
             {v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽
           </Text>
         );
         if (r._type === 'dircat') return (
-          <Text style={{ color: '#722ed1' }}>
+          <Text style={{ color: '#722ed1', fontSize: 12 }}>
             {v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽
           </Text>
         );
         if (r._type === 'category') return (
-          <Text style={{ color: '#389e0d' }}>
+          <Text style={{ color: '#389e0d', fontSize: 12 }}>
             {v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽
           </Text>
         );
