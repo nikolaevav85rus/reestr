@@ -11,7 +11,7 @@ import {
   CloseOutlined, ClockCircleOutlined,
   DollarOutlined, UploadOutlined, PaperClipOutlined,
   ClearOutlined, SendOutlined, ThunderboltOutlined, CopyOutlined,
-  RestOutlined, SettingOutlined, MoreOutlined,
+  RestOutlined, SettingOutlined, MoreOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import apiClient from '../api/apiClient';
 import axios from 'axios';
@@ -20,6 +20,7 @@ import { useSearchParams } from 'react-router-dom';
 import { CATEGORY_CONFIG, DATE_PICKER_LOCALE } from '../constants';
 import ColSettingsDrawer from './ColSettingsDrawer';
 import type { ColDef, ColSetting } from './ColSettingsDrawer';
+import { exportRowsToExcel, formatDateRu, formatMoney, type ExcelColumn } from '../utils/excelExport';
 
 const { Title, Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -79,6 +80,14 @@ function saveColSettings(userId: string | undefined, settings: ColSetting[]): vo
   localStorage.setItem(`ui_cols_${userId ?? 'default'}`, JSON.stringify(settings));
 }
 
+const textCellStyle: React.CSSProperties = {
+  display: 'block',
+  maxWidth: '100%',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+};
+
 function buildColumns(settings: ColSetting[], renderers: Record<string, any>, isGrouped: boolean): any[] {
   const secondaryKeys = new Set(settings.filter(s => s.pairedWith).map(s => s.pairedWith!));
   return settings
@@ -100,10 +109,11 @@ function buildColumns(settings: ColSetting[], renderers: Record<string, any>, is
             key: s.key,
             dataIndex: rdr.dataIndex,
             width: s.width,
+            ellipsis: true,
             render: (v: any, r: any) => (
-              <div>
-                <div>{rdr.render(v, r)}</div>
-                <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={textCellStyle}>{rdr.render(v, r)}</div>
+                <div style={{ ...textCellStyle, color: '#888', marginTop: 2 }}>
                   {secRdr.render(r[secRdr.dataIndex ?? ''], r)}
                 </div>
               </div>
@@ -197,6 +207,7 @@ const PaymentRegistry: React.FC = () => {
   const canGateApprove  = permissions.includes('gate_approve')     || !!user?.is_superadmin;
   const canMemoApprove  = permissions.includes('memo_approve')     || !!user?.is_superadmin;
   const canEditAll      = permissions.includes('req_edit_all')     || !!user?.is_superadmin;
+  const canExportExcel  = permissions.includes('req_export_excel') || !!user?.is_superadmin;
   const canMarkDeletion = canEditAll || permissions.includes('req_create');
 
   // ─── Sticky horizontal scrollbar ────────────────────────────────────────
@@ -435,6 +446,36 @@ const PaymentRegistry: React.FC = () => {
     });
   }, [requests, filterPaymentDates, filterCounterparty, filterDescription,
       filterCategory, filterBudgetItem, filterAmountFrom, filterAmountTo, filterApproval, filterPayment, filterMarked]);
+
+  const excelColumns: ExcelColumn[] = useMemo(() => {
+    const secondaryKeys = new Set(colSettings.filter(s => s.pairedWith).map(s => s.pairedWith!));
+    return colSettings
+      .filter(s => s.key !== 'actions' && s.key !== 'special_icon')
+      .filter(s => !secondaryKeys.has(s.key))
+      .map(s => ({
+        key: s.key,
+        label: COLUMN_DEFS.find(d => d.key === s.key)?.label ?? s.key,
+        visible: s.visible,
+        order: s.order,
+        value: (r: any) => {
+          if (s.key === 'payment_date') return formatDateRu(r.payment_date);
+          if (s.key === 'organization') return r.organization?.name;
+          if (s.key === 'direction') return r.direction?.name;
+          if (s.key === 'creator') return r.creator?.full_name;
+          if (s.key === 'budget_item') return r.budget_item?.name;
+          if (s.key === 'amount') return formatMoney(r.amount);
+          if (s.key === 'approval_status') return APPROVAL_CONFIG[r.approval_status]?.label ?? r.approval_status;
+          if (s.key === 'payment_status') return PAYMENT_CONFIG[r.payment_status]?.label ?? r.payment_status;
+          if (s.key === 'contract_status') return CONTRACT_CONFIG[CONTRACT_KEY(r.contract_status)]?.label;
+          if (s.key === 'is_budgeted') return CONTRACT_CONFIG[CONTRACT_KEY(r.is_budgeted)]?.label;
+          return r[s.key];
+        },
+      }));
+  }, [colSettings]);
+
+  const exportCurrentView = () => {
+    exportRowsToExcel(filteredRequests, excelColumns, `payment-registry-${dayjs().format('YYYYMMDD-HHmm')}`);
+  };
 
   // ─── Группировка (org → dircat → ddsCat → request) ───────────────────────
   const groupedData = useMemo(() => {
@@ -922,7 +963,7 @@ const PaymentRegistry: React.FC = () => {
       sorter: (a: any, b: any) => (a.counterparty ?? '').localeCompare(b.counterparty ?? ''),
       render: (v: string, r: any) => {
         if (isGroupRow(r)) return null;
-        return <Tooltip title={v}><span>{v}</span></Tooltip>;
+        return <Tooltip title={v}><span style={textCellStyle}>{v}</span></Tooltip>;
       },
     },
     description: {
@@ -931,7 +972,7 @@ const PaymentRegistry: React.FC = () => {
       render: (v: string, r: any) => {
         if (isGroupRow(r)) return null;
         return v
-          ? <Tooltip title={v}><Text ellipsis style={{ maxWidth: 160 }}>{v}</Text></Tooltip>
+          ? <Tooltip title={v}><Text ellipsis style={textCellStyle}>{v}</Text></Tooltip>
           : <Text type="secondary">—</Text>;
       },
     },
@@ -941,7 +982,7 @@ const PaymentRegistry: React.FC = () => {
       render: (v: string, r: any) => {
         if (isGroupRow(r)) return null;
         return v
-          ? <Tooltip title={v}><Text ellipsis style={{ maxWidth: 160 }}>{v}</Text></Tooltip>
+          ? <Tooltip title={v}><Text ellipsis style={textCellStyle}>{v}</Text></Tooltip>
           : <Text type="secondary">—</Text>;
       },
     },
@@ -1188,6 +1229,7 @@ const PaymentRegistry: React.FC = () => {
     },
   };
   const columns = buildColumns(colSettings, COLUMN_RENDERERS, isGrouped);
+  const tableScrollX = columns.reduce((sum, col) => sum + (Number(col.width) || 120), 0);
 
   // ─── Рендер ───────────────────────────────────────────────────────────────
   return (
@@ -1334,6 +1376,13 @@ const PaymentRegistry: React.FC = () => {
               <Button icon={<ClearOutlined />} onClick={resetFilters} />
             </Tooltip>
           </Col>
+          {canExportExcel && (
+            <Col>
+              <Tooltip title="Выгрузить текущий вид в Excel">
+                <Button icon={<DownloadOutlined />} onClick={exportCurrentView} disabled={!filteredRequests.length} />
+              </Tooltip>
+            </Col>
+          )}
           <Col>
             <Tooltip title="Настройка колонок">
               <Button icon={<SettingOutlined />} onClick={() => setColDrawerOpen(true)} />
@@ -1352,7 +1401,8 @@ const PaymentRegistry: React.FC = () => {
             loading={loading}
             size="small"
             bordered
-            scroll={{ x: 'max-content' }}
+            tableLayout="fixed"
+            scroll={{ x: tableScrollX }}
             pagination={isGrouped ? false : { pageSize: 20, showTotal: total => `Всего: ${total}` }}
             rowClassName={(r) => {
               if (r._type === 'org')      return 'row-group-org';

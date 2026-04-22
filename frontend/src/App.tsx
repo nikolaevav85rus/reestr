@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ConfigProvider, App as AntdApp, Layout, Menu, Button, Tag, Tooltip, Badge, Dropdown, Typography } from 'antd';
 
 import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation, useNavigate } from 'react-router-dom';
-import { DashboardOutlined, LogoutOutlined, BankOutlined, CalendarOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SettingOutlined, BellOutlined } from '@ant-design/icons';
+import { DashboardOutlined, LogoutOutlined, BankOutlined, CalendarOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SettingOutlined, BellOutlined, DollarOutlined } from '@ant-design/icons';
 import apiClient from './api/apiClient';
 
 import LoginPage from './pages/Login';
@@ -10,6 +10,7 @@ import SettingsPage from './pages/SettingsPage';
 import OrganizationsPage from './pages/Organizations';
 import CalendarPage from './pages/CalendarPage';
 import PaymentRegistry from './pages/PaymentRegistry';
+import CashierWorkspace from './pages/CashierWorkspace';
 
 import { useAuthStore } from './store/authStore';
 
@@ -188,6 +189,11 @@ const MainLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 icon: <DashboardOutlined />,
                 label: <Link to="/dashboard">Реестр платежей</Link>,
               },
+              ...(hasPerm('cashier_workspace_view') ? [{
+                key: '/cashier',
+                icon: <DollarOutlined />,
+                label: <Link to="/cashier">Рабочее пространство казначея</Link>,
+              }] : []),
               ...(hasPerm('dict_view') ? [{
                 key: '/organizations',
                 icon: <BankOutlined />,
@@ -224,6 +230,7 @@ const App: React.FC = () => {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/dashboard" element={<ProtectedRoute><MainLayout><PaymentRegistry /></MainLayout></ProtectedRoute>} />
+            <Route path="/cashier" element={<PermissionRoute permissions={['cashier_workspace_view']}><MainLayout><CashierWorkspace /></MainLayout></PermissionRoute>} />
             <Route path="/organizations" element={<PermissionRoute permissions={['dict_view']}><MainLayout><OrganizationsPage /></MainLayout></PermissionRoute>} />
             <Route path="/calendar" element={<PermissionRoute permissions={['cal_view']}><MainLayout><CalendarPage /></MainLayout></PermissionRoute>} />
             <Route path="/settings" element={<PermissionRoute permissions={['user_view', 'rbac_manage']}><MainLayout><SettingsPage /></MainLayout></PermissionRoute>} />

@@ -49,6 +49,8 @@ async def seed_rbac():
             {"name": "req_view_org", "label": "Просмотр заявок своей орг. (Директор)", "category": "5. Видимость"},
             {"name": "req_view_cluster", "label": "Просмотр заявок кластера (Рук. кластера)", "category": "5. Видимость"},
             {"name": "req_view_all", "label": "Просмотр всех заявок компании", "category": "5. Видимость"},
+            {"name": "cashier_workspace_view", "label": "Рабочее пространство казначея", "category": "5. Видимость"},
+            {"name": "req_export_excel", "label": "Выгрузка реестров в Excel", "category": "5. Видимость"},
             
             # Календарь
             {"name": "cal_view", "label": "Просмотр календаря", "category": "6. Календарь"},
@@ -87,12 +89,16 @@ async def seed_rbac():
         await assign_permissions("INITIATOR", ["req_create", "req_view_own", "dict_view", "cal_view"])
         
         # Казначей (проведение оплат)
-        await assign_permissions("CASHIER", ["req_pay", "req_view_all", "req_view_own", "dict_view", "cal_view"])
+        await assign_permissions("CASHIER", [
+            "req_pay", "cashier_workspace_view", "req_export_excel",
+            "req_view_all", "req_view_own", "dict_view", "cal_view"
+        ])
 
         # ФЭО (основная мощь)
         await assign_permissions("FEO", [
             "req_view_all", "req_view_own", "req_approve", "req_edit_all",
-            "gate_approve", "req_suspend", "dict_view", "dict_edit", "cal_view", "cal_manage"
+            "gate_approve", "req_suspend", "cashier_workspace_view", "req_export_excel",
+            "dict_view", "dict_edit", "cal_view", "cal_manage"
         ])
 
         # Директор

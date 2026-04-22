@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Drawer, Button, Checkbox, InputNumber, Select, Space } from 'antd';
 import { ArrowUpOutlined, ArrowDownOutlined } from '@ant-design/icons';
 
@@ -27,16 +27,26 @@ interface Props {
 }
 
 const ColSettingsDrawer: React.FC<Props> = ({ open, onClose, settings, onChange, defs }) => {
-  const sorted = [...settings].sort((a, b) => a.order - b.order);
+  const [draft, setDraft] = useState<ColSetting[]>(settings);
 
-  const secondaryKeys = new Set(
-    settings.filter(s => s.pairedWith).map(s => s.pairedWith!)
+  useEffect(() => {
+    if (open) setDraft(settings);
+  }, [open, settings]);
+
+  const sorted = useMemo(() => [...draft].sort((a, b) => a.order - b.order), [draft]);
+
+  const secondaryKeys = useMemo(
+    () => new Set(draft.filter(s => s.pairedWith).map(s => s.pairedWith!)),
+    [draft],
   );
 
-  const primaryKeyOf = new Map<string, string>();
-  for (const s of settings) {
-    if (s.pairedWith) primaryKeyOf.set(s.pairedWith, s.key);
-  }
+  const primaryKeyOf = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of draft) {
+      if (s.pairedWith) map.set(s.pairedWith, s.key);
+    }
+    return map;
+  }, [draft]);
 
   const getDefaults = (): ColSetting[] =>
     defs.map((d, i) => ({
@@ -47,12 +57,12 @@ const ColSettingsDrawer: React.FC<Props> = ({ open, onClose, settings, onChange,
     }));
 
   const update = (key: string, patch: Partial<ColSetting>) =>
-    onChange(settings.map(s => (s.key === key ? { ...s, ...patch } : s)));
+    setDraft(current => current.map(s => (s.key === key ? { ...s, ...patch } : s)));
 
   const swap = (idxA: number, idxB: number) => {
     const a = sorted[idxA];
     const b = sorted[idxB];
-    onChange(settings.map(s => {
+    setDraft(current => current.map(s => {
       if (s.key === a.key) return { ...s, order: b.order };
       if (s.key === b.key) return { ...s, order: a.order };
       return s;
@@ -61,8 +71,8 @@ const ColSettingsDrawer: React.FC<Props> = ({ open, onClose, settings, onChange,
 
   const getPairOptions = (key: string) => {
     const requiredKeys = new Set(defs.filter(d => d.required).map(d => d.key));
-    const currentPaired = settings.find(s => s.key === key)?.pairedWith;
-    const available = settings.filter(s =>
+    const currentPaired = draft.find(s => s.key === key)?.pairedWith;
+    const available = draft.filter(s =>
       s.key !== key &&
       !requiredKeys.has(s.key) &&
       s.visible &&
@@ -84,7 +94,14 @@ const ColSettingsDrawer: React.FC<Props> = ({ open, onClose, settings, onChange,
       title={
         <Space>
           <span>Настройка колонок</span>
-          <Button size="small" onClick={() => onChange(getDefaults())}>
+          <Button
+            size="small"
+            onClick={() => {
+              const defaults = getDefaults();
+              setDraft(defaults);
+              onChange(defaults);
+            }}
+          >
             Сбросить
           </Button>
         </Space>
@@ -92,6 +109,20 @@ const ColSettingsDrawer: React.FC<Props> = ({ open, onClose, settings, onChange,
       open={open}
       onClose={onClose}
       width={500}
+      footer={
+        <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Button onClick={onClose}>Отмена</Button>
+          <Button
+            type="primary"
+            onClick={() => {
+              onChange(draft);
+              onClose();
+            }}
+          >
+            Применить
+          </Button>
+        </Space>
+      }
     >
       {sorted.map((s, idx) => {
         const def = defs.find(d => d.key === s.key);
