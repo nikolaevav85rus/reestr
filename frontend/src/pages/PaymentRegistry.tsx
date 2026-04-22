@@ -3,7 +3,7 @@ import dayjs from 'dayjs';
 import {
   Table, Tag, Button, Space, Typography, Card, Row, Col,
   Select, Input, Modal, Form, InputNumber, DatePicker,
-  App as AntdApp, Alert, Popconfirm, Tooltip, Divider, Upload, Switch, Segmented, Timeline, Dropdown,
+  App as AntdApp, Alert, Popconfirm, Tooltip, Divider, Upload, Switch, Segmented, Timeline, Dropdown, Tabs,
 } from 'antd';
 import type { MenuProps, UploadFile } from 'antd';
 import {
@@ -24,6 +24,8 @@ import { exportRowsToExcel, formatDateRu, formatMoney, type ExcelColumn } from '
 
 const { Title, Text } = Typography;
 const { RangePicker } = DatePicker;
+
+const currentMonthRange = () => [dayjs().startOf('month'), dayjs().endOf('month')];
 
 type GatePreview = {
   allowed: boolean;
@@ -288,7 +290,7 @@ const PaymentRegistry: React.FC = () => {
   const [filterDir, setFilterDir] = useState<string | undefined>();
 
   // ─── Фильтры (клиент) ────────────────────────────────────────────────────
-  const [filterPaymentDates, setFilterPaymentDates] = useState<any>(null);
+  const [filterPaymentDates, setFilterPaymentDates] = useState<any>(() => currentMonthRange());
   const [filterCounterparty, setFilterCounterparty] = useState('');
   const [filterDescription, setFilterDescription]   = useState('');
   const [filterBudgetItem, setFilterBudgetItem]     = useState<string | undefined>();
@@ -296,6 +298,9 @@ const PaymentRegistry: React.FC = () => {
   const [filterAmountTo, setFilterAmountTo]         = useState<number | undefined>();
   const [isGrouped, setIsGrouped]                   = useState<boolean>(() => {
     return localStorage.getItem('ui_registry_grouped') === 'true';
+  });
+  const [isDayTabbed, setIsDayTabbed]               = useState<boolean>(() => {
+    return localStorage.getItem('ui_registry_day_tabs') === 'true';
   });
   const [expandLevel, setExpandLevel]               = useState<'org' | 'dircat' | 'cat' | 'req'>(() => {
     const saved = localStorage.getItem('ui_registry_expand_level');
@@ -307,10 +312,12 @@ const PaymentRegistry: React.FC = () => {
   const [filterMarked, setFilterMarked]             = useState<'all' | 'marked' | 'unmarked'>('all');
   const [colSettings, setColSettings]               = useState<ColSetting[]>(() => loadColSettings(user?.id));
   const [colDrawerOpen, setColDrawerOpen]           = useState(false);
+  const [activeMonthKey, setActiveMonthKey]         = useState<string>();
+  const [activeDayKey, setActiveDayKey]             = useState<string>();
 
   const resetFilters = () => {
     setFilterOrg(undefined); setFilterDir(undefined);
-    setFilterPaymentDates(null); setFilterCounterparty('');
+    setFilterPaymentDates(currentMonthRange()); setFilterCounterparty('');
     setFilterDescription(''); setFilterCategory(undefined);
     setFilterBudgetItem(undefined);
     setFilterAmountFrom(undefined); setFilterAmountTo(undefined);
@@ -464,6 +471,62 @@ const PaymentRegistry: React.FC = () => {
   }, [requests, filterPaymentDates, filterCounterparty, filterDescription,
       filterCategory, filterBudgetItem, filterAmountFrom, filterAmountTo, filterApproval, filterPayment, filterMarked]);
 
+  const dateTabbedMonths = useMemo(() => {
+    const byMonth = new Map<string, { key: string; label: string; count: number; days: Map<string, { key: string; label: string; count: number; rows: any[] }> }>();
+    const sorted = [...filteredRequests].sort((a, b) => (a.payment_date ?? '').localeCompare(b.payment_date ?? ''));
+
+    for (const r of sorted) {
+      if (!r.payment_date) continue;
+      const date = dayjs(r.payment_date);
+      const monthKey = date.format('YYYY-MM');
+      const dayKey = date.format('YYYY-MM-DD');
+      const month = byMonth.get(monthKey) ?? {
+        key: monthKey,
+        label: new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' }).format(date.toDate()),
+        count: 0,
+        days: new Map(),
+      };
+      const day = month.days.get(dayKey) ?? {
+        key: dayKey,
+        label: date.format('DD.MM.YYYY'),
+        count: 0,
+        rows: [],
+      };
+
+      month.count += 1;
+      day.count += 1;
+      day.rows.push(r);
+      month.days.set(dayKey, day);
+      byMonth.set(monthKey, month);
+    }
+
+    return [...byMonth.values()].map(month => ({
+      ...month,
+      days: [...month.days.values()],
+    }));
+  }, [filteredRequests]);
+
+  useEffect(() => {
+    if (!isDayTabbed || !dateTabbedMonths.length) {
+      setActiveMonthKey(undefined);
+      setActiveDayKey(undefined);
+      return;
+    }
+
+    const month = dateTabbedMonths.find(m => m.key === activeMonthKey) ?? dateTabbedMonths[0];
+    const day = month.days.find(d => d.key === activeDayKey) ?? month.days[0];
+
+    if (month.key !== activeMonthKey) setActiveMonthKey(month.key);
+    if (day?.key !== activeDayKey) setActiveDayKey(day?.key);
+  }, [isDayTabbed, dateTabbedMonths, activeMonthKey, activeDayKey]);
+
+  const displayedRequests = useMemo(() => {
+    if (!isDayTabbed) return filteredRequests;
+    const month = dateTabbedMonths.find(m => m.key === activeMonthKey);
+    const day = month?.days.find(d => d.key === activeDayKey);
+    return day?.rows ?? [];
+  }, [isDayTabbed, filteredRequests, dateTabbedMonths, activeMonthKey, activeDayKey]);
+
   const excelColumns: ExcelColumn[] = useMemo(() => {
     const secondaryKeys = new Set(colSettings.filter(s => s.pairedWith).map(s => s.pairedWith!));
     return colSettings
@@ -491,13 +554,13 @@ const PaymentRegistry: React.FC = () => {
   }, [colSettings]);
 
   const exportCurrentView = () => {
-    exportRowsToExcel(filteredRequests, excelColumns, `payment-registry-${dayjs().format('YYYYMMDD-HHmm')}`);
+    exportRowsToExcel(displayedRequests, excelColumns, `payment-registry-${dayjs().format('YYYYMMDD-HHmm')}`);
   };
 
   // ─── Группировка (org → dircat → ddsCat → request) ───────────────────────
   const groupedData = useMemo(() => {
     const byOrg = new Map<string, any>();
-    for (const r of filteredRequests) {
+    for (const r of displayedRequests) {
       const orgId      = r.organization_id;
       const orgName    = r.organization?.name ?? '—';
       const dirCatId   = r.direction?.category?.id   ?? '__none__';
@@ -542,7 +605,7 @@ const PaymentRegistry: React.FC = () => {
               })),
           })),
       }));
-  }, [filteredRequests]);
+  }, [displayedRequests]);
 
   const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
 
@@ -1255,8 +1318,25 @@ const PaymentRegistry: React.FC = () => {
         <Title level={3} style={{ margin: 0 }}>Реестр платежных заявок</Title>
         <Space>
           <Space size={6}>
+            <Text type="secondary" style={{ fontSize: 13 }}>По дням</Text>
+            <Switch
+              aria-label="По дням"
+              checked={isDayTabbed}
+              onChange={v => {
+                setIsDayTabbed(v);
+                localStorage.setItem('ui_registry_day_tabs', String(v));
+              }}
+              size="small"
+            />
+          </Space>
+          <Space size={6}>
             <Text type="secondary" style={{ fontSize: 13 }}>Группировка</Text>
-            <Switch checked={isGrouped} onChange={v => { setIsGrouped(v); localStorage.setItem('ui_registry_grouped', String(v)); }} size="small" />
+            <Switch
+              aria-label="Группировка"
+              checked={isGrouped}
+              onChange={v => { setIsGrouped(v); localStorage.setItem('ui_registry_grouped', String(v)); }}
+              size="small"
+            />
           </Space>
           {isGrouped && (
             <Segmented
@@ -1396,7 +1476,7 @@ const PaymentRegistry: React.FC = () => {
           {canExportExcel && (
             <Col>
               <Tooltip title="Выгрузить текущий вид в Excel">
-                <Button icon={<DownloadOutlined />} onClick={exportCurrentView} disabled={!filteredRequests.length} />
+                <Button icon={<DownloadOutlined />} onClick={exportCurrentView} disabled={!displayedRequests.length} />
               </Tooltip>
             </Col>
           )}
@@ -1411,10 +1491,38 @@ const PaymentRegistry: React.FC = () => {
       {/* Таблица */}
       <Card styles={{ body: { padding: 0 } }}>
         <div ref={tableWrapRef}>
+          {isDayTabbed && (
+            <div style={{ padding: '8px 12px 0' }}>
+              <Tabs
+                size="small"
+                activeKey={activeMonthKey}
+                onChange={(key) => {
+                  setActiveMonthKey(key);
+                  const month = dateTabbedMonths.find(m => m.key === key);
+                  setActiveDayKey(month?.days[0]?.key);
+                }}
+                items={dateTabbedMonths.map(month => ({
+                  key: month.key,
+                  label: `${month.label} (${month.count})`,
+                  children: (
+                    <Tabs
+                      size="small"
+                      activeKey={activeDayKey}
+                      onChange={setActiveDayKey}
+                      items={month.days.map(day => ({
+                        key: day.key,
+                        label: `${day.label} (${day.count})`,
+                      }))}
+                    />
+                  ),
+                }))}
+              />
+            </div>
+          )}
           <Table
-            dataSource={isGrouped ? groupedData : filteredRequests}
+            dataSource={isGrouped ? groupedData : displayedRequests}
             columns={columns}
-            rowKey="key"
+            rowKey={(r) => r.key ?? r.id}
             loading={loading}
             size="small"
             bordered

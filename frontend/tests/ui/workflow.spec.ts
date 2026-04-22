@@ -210,4 +210,29 @@ test.describe('UI regression: request workflow', () => {
     await expect(page.getByRole('columnheader', { name: /Описание \/ Назначение платежа/ })).toBeVisible();
     await expect(page.getByRole('columnheader', { name: /^Назначение платежа$/ })).toHaveCount(0);
   });
+
+  test('payment registry can show month and day tabs with independent grouping', async ({ page }) => {
+    test.skip(!allowedScenario, 'No allowed calendar/dictionary data found for registry day tabs scenario.');
+
+    const today = new Date();
+    const todayIso = today.toISOString().slice(0, 10);
+    const todayRu = today.toLocaleDateString('ru-RU');
+    const dayTabsMarker = marker('REG-P0-DAYTABS');
+    await createDraft(api, initiator, {
+      ...makeRequestPayload(allowedScenario!, dayTabsMarker, 6401),
+      payment_date: todayIso,
+    });
+
+    await loginUi(page, USERS.feo);
+    await expect(page.getByText(dayTabsMarker, { exact: false }).first()).toBeVisible({ timeout: 15_000 });
+
+    await page.getByRole('switch', { name: 'По дням' }).click();
+    const todayTab = page.locator('.ant-tabs-tab').filter({ hasText: todayRu }).first();
+    await expect(todayTab).toBeVisible({ timeout: 15_000 });
+    await todayTab.click();
+    await expect(page.getByText(dayTabsMarker, { exact: false }).first()).toBeVisible();
+
+    await page.getByRole('switch', { name: 'Группировка' }).click();
+    await expect(page.locator('.row-group-org').first()).toBeVisible({ timeout: 15_000 });
+  });
 });
