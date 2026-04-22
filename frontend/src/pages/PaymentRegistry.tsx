@@ -55,21 +55,29 @@ const COLUMN_DEFS: ColDef[] = [
 
 function getDefaultColSettings(): ColSetting[] {
   return COLUMN_DEFS.map((d, i) => ({
-    key: d.key, visible: d.defaultVisible, order: i, width: d.defaultWidth,
+    key: d.key, visible: d.defaultVisible, order: i, width: Math.max(1, Math.round(d.defaultWidth / 10)),
   }));
+}
+
+function normalizeColSettingWidth(width: number): number {
+  if (!Number.isFinite(width) || width <= 0) return 10;
+  return width > 40 ? Math.max(1, Math.round(width / 10)) : width;
 }
 
 function loadColSettings(userId?: string): ColSetting[] {
   try {
     const raw = localStorage.getItem(`ui_cols_${userId ?? 'default'}`);
     if (!raw) return getDefaultColSettings();
-    const saved: ColSetting[] = JSON.parse(raw);
+    const saved: ColSetting[] = JSON.parse(raw).map((s: ColSetting) => ({
+      ...s,
+      width: normalizeColSettingWidth(s.width),
+    }));
     const existingKeys = new Set(saved.map(s => s.key));
     const maxOrder = saved.reduce((m, s) => Math.max(m, s.order), -1);
     let offset = 0;
     for (const d of COLUMN_DEFS) {
       if (!existingKeys.has(d.key)) {
-        saved.push({ key: d.key, visible: d.defaultVisible, order: maxOrder + (++offset), width: d.defaultWidth });
+        saved.push({ key: d.key, visible: d.defaultVisible, order: maxOrder + (++offset), width: Math.max(1, Math.round(d.defaultWidth / 10)) });
       }
     }
     return saved;
@@ -80,6 +88,14 @@ function loadColSettings(userId?: string): ColSetting[] {
 
 function saveColSettings(userId: string | undefined, settings: ColSetting[]): void {
   localStorage.setItem(`ui_cols_${userId ?? 'default'}`, JSON.stringify(settings));
+}
+
+function getRelativeWidth(key: string, settings: ColSetting[], secondaryKeys: Set<string>): string {
+  const visible = settings.filter(s => s.visible && !secondaryKeys.has(s.key));
+  const total = visible.reduce((sum, s) => sum + normalizeColSettingWidth(s.width), 0) || 1;
+  const setting = visible.find(s => s.key === key);
+  const weight = normalizeColSettingWidth(setting?.width ?? 10);
+  return `${(weight / total) * 100}%`;
 }
 
 const textCellStyle: React.CSSProperties = {
@@ -128,7 +144,7 @@ function buildColumns(settings: ColSetting[], renderers: Record<string, any>, is
             ),
             key: s.key,
             dataIndex: rdr.dataIndex,
-            width: s.width,
+            width: getRelativeWidth(s.key, settings, secondaryKeys),
             render: (v: any, r: any) => (
               <div style={{ minWidth: 0 }}>
                 <div>{rdr.render(v, r)}</div>
@@ -144,7 +160,7 @@ function buildColumns(settings: ColSetting[], renderers: Record<string, any>, is
         title: <span style={SMALL_FONT_COLUMN_KEYS.has(s.key) ? smallCellStyle : undefined}>{def.label}</span>,
         key: s.key,
         dataIndex: rdr.dataIndex,
-        width: s.width,
+        width: getRelativeWidth(s.key, settings, secondaryKeys),
         ellipsis: rdr.dataIndex ? rdr.ellipsis : undefined,
         align: rdr.align,
         sorter: rdr.sorter,
@@ -228,55 +244,6 @@ const PaymentRegistry: React.FC = () => {
   const canEditAll      = permissions.includes('req_edit_all')     || !!user?.is_superadmin;
   const canExportExcel  = permissions.includes('req_export_excel') || !!user?.is_superadmin;
   const canMarkDeletion = canEditAll || permissions.includes('req_create');
-
-  // ─── Sticky horizontal scrollbar ────────────────────────────────────────
-  const tableWrapRef = useRef<HTMLDivElement>(null);
-  const stickyScrollRef = useRef<HTMLDivElement>(null);
-  const stickyInnerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const getTableContent = () =>
-      tableWrapRef.current?.querySelector<HTMLElement>('.ant-table-content');
-
-    const updateWidth = () => {
-      const content = getTableContent();
-      const inner = stickyInnerRef.current;
-      if (content && inner) {
-        inner.style.width = content.scrollWidth + 'px';
-      }
-    };
-
-    const syncFromTable = () => {
-      const content = getTableContent();
-      const sticky = stickyScrollRef.current;
-      if (content && sticky && sticky.scrollLeft !== content.scrollLeft) {
-        sticky.scrollLeft = content.scrollLeft;
-      }
-    };
-
-    const syncFromSticky = () => {
-      const content = getTableContent();
-      const sticky = stickyScrollRef.current;
-      if (content && sticky && content.scrollLeft !== sticky.scrollLeft) {
-        content.scrollLeft = sticky.scrollLeft;
-      }
-    };
-
-    const observer = new ResizeObserver(updateWidth);
-    const content = getTableContent();
-    if (content) {
-      observer.observe(content);
-      content.addEventListener('scroll', syncFromTable);
-    }
-    stickyScrollRef.current?.addEventListener('scroll', syncFromSticky);
-    updateWidth();
-
-    return () => {
-      observer.disconnect();
-      getTableContent()?.removeEventListener('scroll', syncFromTable);
-      stickyScrollRef.current?.removeEventListener('scroll', syncFromSticky);
-    };
-  });
 
   // ─── Данные ─────────────────────────────────────────────────────────────
   const [requests, setRequests]         = useState<any[]>([]);
@@ -1309,7 +1276,6 @@ const PaymentRegistry: React.FC = () => {
     },
   };
   const columns = buildColumns(colSettings, COLUMN_RENDERERS, isGrouped);
-  const tableScrollX = columns.reduce((sum, col) => sum + (Number(col.width) || 120), 0);
 
   // ─── Рендер ───────────────────────────────────────────────────────────────
   return (
@@ -1490,7 +1456,7 @@ const PaymentRegistry: React.FC = () => {
 
       {/* Таблица */}
       <Card styles={{ body: { padding: 0 } }}>
-        <div ref={tableWrapRef}>
+        <div>
           {isDayTabbed && (
             <div style={{ padding: '8px 12px 0' }}>
               <Tabs
@@ -1527,7 +1493,6 @@ const PaymentRegistry: React.FC = () => {
             size="small"
             bordered
             tableLayout="fixed"
-            scroll={{ x: tableScrollX }}
             pagination={isGrouped ? false : { pageSize: 20, showTotal: total => `Всего: ${total}` }}
             rowClassName={(r) => {
               if (r._type === 'org')      return 'row-group-org';
@@ -1557,16 +1522,6 @@ const PaymentRegistry: React.FC = () => {
           />
         </div>
       </Card>
-
-      {/* Sticky горизонтальный скроллбар */}
-      <div ref={stickyScrollRef} style={{
-        position: 'fixed', bottom: 0, left: 0, right: 0,
-        overflowX: 'scroll', overflowY: 'hidden',
-        height: 14, zIndex: 100,
-        marginLeft: 200,
-      }}>
-        <div ref={stickyInnerRef} style={{ height: 1 }} />
-      </div>
 
       {/* Модалка причины */}
       <ReasonModal
@@ -1921,7 +1876,7 @@ const PaymentRegistry: React.FC = () => {
         .row-suspended td { background-color: #fff1f0 !important; }
         .row-marked-deletion td { background-color: #fff0f0 !important; opacity: 0.65; text-decoration: line-through; }
         .row-marked-deletion td .ant-btn { text-decoration: none; }
-        .ant-table-wrapper .ant-table-content { overflow-x: scroll !important; overflow-y: visible !important; scrollbar-width: none; }
+        .ant-table-wrapper .ant-table-content { overflow-x: hidden !important; overflow-y: visible !important; }
         .ant-table-wrapper .ant-table-content::-webkit-scrollbar { display: none; }
       `}</style>
     </div>

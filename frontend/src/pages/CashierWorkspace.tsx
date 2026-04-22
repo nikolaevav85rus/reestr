@@ -61,20 +61,28 @@ const COLUMN_DEFS: ColDef[] = [
 ];
 
 function getDefaultColSettings(): ColSetting[] {
-  return COLUMN_DEFS.map((d, i) => ({ key: d.key, visible: d.defaultVisible, order: i, width: d.defaultWidth }));
+  return COLUMN_DEFS.map((d, i) => ({ key: d.key, visible: d.defaultVisible, order: i, width: Math.max(1, Math.round(d.defaultWidth / 10)) }));
+}
+
+function normalizeColSettingWidth(width: number): number {
+  if (!Number.isFinite(width) || width <= 0) return 10;
+  return width > 40 ? Math.max(1, Math.round(width / 10)) : width;
 }
 
 function loadColSettings(userId?: string): ColSetting[] {
   try {
     const raw = localStorage.getItem(`ui_cashier_cols_${userId ?? 'default'}`);
     if (!raw) return getDefaultColSettings();
-    const saved: ColSetting[] = JSON.parse(raw);
+    const saved: ColSetting[] = JSON.parse(raw).map((s: ColSetting) => ({
+      ...s,
+      width: normalizeColSettingWidth(s.width),
+    }));
     const existingKeys = new Set(saved.map(s => s.key));
     const maxOrder = saved.reduce((m, s) => Math.max(m, s.order), -1);
     let offset = 0;
     for (const d of COLUMN_DEFS) {
       if (!existingKeys.has(d.key)) {
-        saved.push({ key: d.key, visible: d.defaultVisible, order: maxOrder + (++offset), width: d.defaultWidth });
+        saved.push({ key: d.key, visible: d.defaultVisible, order: maxOrder + (++offset), width: Math.max(1, Math.round(d.defaultWidth / 10)) });
       }
     }
     return saved;
@@ -85,6 +93,14 @@ function loadColSettings(userId?: string): ColSetting[] {
 
 function saveColSettings(userId: string | undefined, settings: ColSetting[]): void {
   localStorage.setItem(`ui_cashier_cols_${userId ?? 'default'}`, JSON.stringify(settings));
+}
+
+function getRelativeWidth(key: string, settings: ColSetting[], secondaryKeys: Set<string>): string {
+  const visible = settings.filter(s => s.visible && !secondaryKeys.has(s.key));
+  const total = visible.reduce((sum, s) => sum + normalizeColSettingWidth(s.width), 0) || 1;
+  const setting = visible.find(s => s.key === key);
+  const weight = normalizeColSettingWidth(setting?.width ?? 10);
+  return `${(weight / total) * 100}%`;
 }
 
 function shouldIgnoreRowClick(event: React.MouseEvent<HTMLElement>) {
@@ -323,7 +339,7 @@ const CashierWorkspace: React.FC = () => {
             ),
             key: s.key,
             dataIndex: renderer.dataIndex,
-            width: s.width,
+            width: getRelativeWidth(s.key, colSettings, secondaryColumnKeys),
             ellipsis: renderer.ellipsis && secondaryRenderer.ellipsis,
             align: renderer.align,
             sorter: renderer.sorter,
@@ -344,7 +360,7 @@ const CashierWorkspace: React.FC = () => {
         title: <span style={SMALL_FONT_COLUMN_KEYS.has(s.key) ? smallCellStyle : undefined}>{def.label}</span>,
         key: s.key,
         dataIndex: renderer.dataIndex,
-        width: s.width,
+        width: getRelativeWidth(s.key, colSettings, secondaryColumnKeys),
         ellipsis: renderer.ellipsis,
         align: renderer.align,
         sorter: renderer.sorter,
@@ -352,8 +368,6 @@ const CashierWorkspace: React.FC = () => {
       };
     })
     .filter(Boolean) as any[];
-
-  const tableScrollX = columns.reduce((sum, col) => sum + (Number(col.width) || 120), 0);
 
   const excelColumns: ExcelColumn[] = colSettings
     .filter(s => s.key !== 'actions')
@@ -478,7 +492,6 @@ const CashierWorkspace: React.FC = () => {
                 size="small"
                 bordered
                 tableLayout="fixed"
-                scroll={{ x: tableScrollX }}
                 pagination={{ pageSize: 20, showTotal: total => `Всего: ${total}` }}
                 onRow={(record) => ({
                   onClick: (event) => {

@@ -14,7 +14,7 @@ export interface ColSetting {
   key: string;
   visible: boolean;
   order: number;
-  width: number;
+  width: number; // relative weight
   pairedWith?: string;
 }
 
@@ -171,12 +171,13 @@ const ColSettingsDrawer: React.FC<Props> = ({ open, onClose, settings, onChange,
             </span>
             {!isSecondary && (
               <>
+                <span style={{ fontSize: 11, color: '#8c8c8c' }}>Вес</span>
                 <InputNumber
                   size="small"
                   style={{ width: 70 }}
                   value={s.width}
-                  min={40}
-                  max={500}
+                  min={1}
+                  max={40}
                   onChange={v => update(s.key, { width: v ?? s.width })}
                 />
                 {!def.required && (
