@@ -225,6 +225,7 @@ const ReasonModal: React.FC<{
       onCancel={() => { setValue(''); onCancel(); }}
       onOk={() => { onOk(value); setValue(''); }}
       okText="Подтвердить" cancelText="Отменить"
+      destroyOnHidden
     >
       <Input.TextArea rows={3} placeholder="Укажите причину (необязательно)"
         value={value} onChange={e => setValue(e.target.value)} />
@@ -1280,7 +1281,87 @@ const PaymentRegistry: React.FC = () => {
       },
     },
   };
-  const columns = buildColumns(colSettings, COLUMN_RENDERERS, isGrouped);
+  const columns = useMemo(
+    () => buildColumns(colSettings, COLUMN_RENDERERS, isGrouped),
+    [
+      colSettings, isGrouped, fetchRequests, user?.id, user?.is_superadmin,
+      canCreate, canEditAll, canApprove, canGateApprove, canContract,
+      canMemoApprove, canPay, canSuspend, canMarkDeletion,
+    ],
+  );
+
+  const registryTable = useMemo(() => (
+    <Card styles={{ body: { padding: 0 } }}>
+      <div>
+        {isDayTabbed && (
+          <div style={{ padding: '8px 12px 0' }}>
+            <Tabs
+              size="small"
+              activeKey={activeMonthKey}
+              onChange={(key) => {
+                setActiveMonthKey(key);
+                const month = dateTabbedMonths.find(m => m.key === key);
+                setActiveDayKey(month?.days[0]?.key);
+              }}
+              items={dateTabbedMonths.map(month => ({
+                key: month.key,
+                label: `${month.label} (${month.count})`,
+                children: (
+                  <Tabs
+                    size="small"
+                    activeKey={activeDayKey}
+                    onChange={setActiveDayKey}
+                    items={month.days.map(day => ({
+                      key: day.key,
+                      label: `${day.label} (${day.count})`,
+                    }))}
+                  />
+                ),
+              }))}
+            />
+          </div>
+        )}
+        <Table
+          dataSource={isGrouped ? groupedData : displayedRequests}
+          columns={columns}
+          rowKey={(r) => r.key ?? r.id}
+          loading={loading}
+          size="small"
+          bordered
+          tableLayout="fixed"
+          pagination={isGrouped ? false : { pageSize: 20, showTotal: total => `Всего: ${total}` }}
+          rowClassName={(r) => {
+            if (r._type === 'org')      return 'row-group-org';
+            if (r._type === 'dircat')   return 'row-group-dircat';
+            if (r._type === 'category') return 'row-group-cat';
+            if (r.is_marked_for_deletion) return 'row-marked-deletion';
+            if (r.approval_status === 'PENDING_GATE') return 'row-pending-gate';
+            if (r.approval_status === 'PENDING_MEMO') return 'row-pending-memo';
+            if (r.approval_status === 'SUSPENDED') return 'row-suspended';
+            return r.special_order ? 'row-special' : '';
+          }}
+          onRow={(record) => ({
+            onClick: (event) => {
+              if (isGrouped || isGroupRow(record) || shouldIgnoreRowClick(event)) return;
+              setViewingRequest(record);
+            },
+            style: isGrouped || isGroupRow(record) ? undefined : { cursor: 'pointer' },
+          })}
+          expandable={isGrouped ? {
+            expandedRowKeys: expandedKeys,
+            onExpand: (expanded, record) => {
+              setExpandedKeys(prev =>
+                expanded ? [...prev, record.key] : prev.filter((k: string) => k !== record.key)
+              );
+            },
+          } : undefined}
+        />
+      </div>
+    </Card>
+  ), [
+    activeDayKey, activeMonthKey, columns, dateTabbedMonths, displayedRequests,
+    expandedKeys, groupedData, isDayTabbed, isGrouped, loading,
+  ]);
 
   // ─── Рендер ───────────────────────────────────────────────────────────────
   return (
@@ -1460,73 +1541,7 @@ const PaymentRegistry: React.FC = () => {
       </Card>
 
       {/* Таблица */}
-      <Card styles={{ body: { padding: 0 } }}>
-        <div>
-          {isDayTabbed && (
-            <div style={{ padding: '8px 12px 0' }}>
-              <Tabs
-                size="small"
-                activeKey={activeMonthKey}
-                onChange={(key) => {
-                  setActiveMonthKey(key);
-                  const month = dateTabbedMonths.find(m => m.key === key);
-                  setActiveDayKey(month?.days[0]?.key);
-                }}
-                items={dateTabbedMonths.map(month => ({
-                  key: month.key,
-                  label: `${month.label} (${month.count})`,
-                  children: (
-                    <Tabs
-                      size="small"
-                      activeKey={activeDayKey}
-                      onChange={setActiveDayKey}
-                      items={month.days.map(day => ({
-                        key: day.key,
-                        label: `${day.label} (${day.count})`,
-                      }))}
-                    />
-                  ),
-                }))}
-              />
-            </div>
-          )}
-          <Table
-            dataSource={isGrouped ? groupedData : displayedRequests}
-            columns={columns}
-            rowKey={(r) => r.key ?? r.id}
-            loading={loading}
-            size="small"
-            bordered
-            tableLayout="fixed"
-            pagination={isGrouped ? false : { pageSize: 20, showTotal: total => `Всего: ${total}` }}
-            rowClassName={(r) => {
-              if (r._type === 'org')      return 'row-group-org';
-              if (r._type === 'dircat')   return 'row-group-dircat';
-              if (r._type === 'category') return 'row-group-cat';
-              if (r.is_marked_for_deletion) return 'row-marked-deletion';
-              if (r.approval_status === 'PENDING_GATE') return 'row-pending-gate';
-              if (r.approval_status === 'PENDING_MEMO') return 'row-pending-memo';
-              if (r.approval_status === 'SUSPENDED') return 'row-suspended';
-              return r.special_order ? 'row-special' : '';
-            }}
-            onRow={(record) => ({
-              onClick: (event) => {
-                if (isGrouped || isGroupRow(record) || shouldIgnoreRowClick(event)) return;
-                setViewingRequest(record);
-              },
-              style: isGrouped || isGroupRow(record) ? undefined : { cursor: 'pointer' },
-            })}
-            expandable={isGrouped ? {
-              expandedRowKeys: expandedKeys,
-              onExpand: (expanded, record) => {
-                setExpandedKeys(prev =>
-                  expanded ? [...prev, record.key] : prev.filter((k: string) => k !== record.key)
-                );
-              },
-            } : undefined}
-          />
-        </div>
-      </Card>
+      {registryTable}
 
       {/* Модалка причины */}
       <ReasonModal
@@ -1554,7 +1569,7 @@ const PaymentRegistry: React.FC = () => {
         cancelText="Отменить"
         confirmLoading={formLoading}
         width={640}
-        forceRender
+        destroyOnHidden
       >
         <Form form={form} layout="vertical" onFinish={handleFormSubmit} style={{ marginTop: 8 }}>
           {editingRequest && (
@@ -1658,6 +1673,7 @@ const PaymentRegistry: React.FC = () => {
         onCancel={() => { URL.revokeObjectURL(filePreview?.url ?? ''); setFilePreview(null); }}
         width={800}
         centered
+        destroyOnHidden
       >
         {filePreview && (
           <img src={filePreview.url} alt={filePreview.name}
@@ -1683,6 +1699,7 @@ const PaymentRegistry: React.FC = () => {
         onCancel={() => { setUnsuspendModal({ open: false, requestId: '' }); setUnsuspendDate(null); }}
         onOk={handleUnsuspend}
         okText="Вернуть" cancelText="Отменить"
+        destroyOnHidden
       >
         <div style={{ marginBottom: 8, color: '#8c8c8c' }}>
           Укажите новую дату оплаты. Заявка вернётся в статус «Черновик».
@@ -1713,6 +1730,7 @@ const PaymentRegistry: React.FC = () => {
         onCancel={() => { setMoveDraftModal({ open: false, requestId: '' }); setMoveDraftDate(null); }}
         onOk={handleMoveToDraft}
         okText="Перенести" cancelText="Отменить"
+        destroyOnHidden
       >
         <div style={{ marginBottom: 8, color: '#8c8c8c' }}>
           Укажите новую дату оплаты. Заявка вернётся в статус «Черновик».
@@ -1733,6 +1751,7 @@ const PaymentRegistry: React.FC = () => {
         onCancel={() => { setPostponeModal({ open: false, requestId: '' }); setPostponeDate(null); setPostponeReason(''); }}
         onOk={handlePostpone}
         okText="Перенести" cancelText="Отменить"
+        destroyOnHidden
       >
         <div style={{ marginBottom: 12, color: '#8c8c8c' }}>
           Укажите причину переноса и при необходимости новую дату оплаты.
@@ -1776,6 +1795,7 @@ const PaymentRegistry: React.FC = () => {
         title={`Заявка № ${viewingRequest?.request_number ?? viewingRequest?.id?.slice(0, 8).toUpperCase() ?? ''}`}
         width={680}
         centered
+        destroyOnHidden
       >
         {viewingRequest && (() => {
           const r = viewingRequest;

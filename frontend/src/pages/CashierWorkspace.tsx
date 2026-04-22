@@ -323,56 +323,58 @@ const CashierWorkspace: React.FC = () => {
     [colSettings],
   );
 
-  const columns = colSettings
-    .filter(s => s.visible)
-    .filter(s => !secondaryColumnKeys.has(s.key))
-    .sort((a, b) => a.order - b.order)
-    .map(s => {
-      const def = COLUMN_DEFS.find(d => d.key === s.key);
-      const renderer = columnRenderers[s.key];
-      if (!def || !renderer) return null;
-      if (s.pairedWith) {
-        const secondaryDef = COLUMN_DEFS.find(d => d.key === s.pairedWith);
-        const secondaryRenderer = columnRenderers[s.pairedWith];
-        const secondaryVisible = colSettings.find(item => item.key === s.pairedWith)?.visible;
-        if (secondaryDef && secondaryRenderer && secondaryVisible) {
-          return {
-            title: (
-              <span style={SMALL_FONT_COLUMN_KEYS.has(s.key) || SMALL_FONT_COLUMN_KEYS.has(s.pairedWith) ? smallCellStyle : undefined}>
-                {def.label} / {secondaryDef.label}
-              </span>
-            ),
-            key: s.key,
-            dataIndex: renderer.dataIndex,
-            width: getRelativeWidth(s.key, colSettings, secondaryColumnKeys),
-            ellipsis: renderer.ellipsis && secondaryRenderer.ellipsis,
-            align: renderer.align,
-            sorter: renderer.sorter,
-            render: (v: any, r: any) => (
-              <div style={{ minWidth: 0 }}>
-                <div>{renderer.render ? renderer.render(v, r) : v}</div>
-                <div style={nestedCellDividerStyle}>
-                  {secondaryRenderer.render
-                    ? secondaryRenderer.render(r[secondaryRenderer.dataIndex ?? ''], r)
-                    : r[secondaryRenderer.dataIndex ?? s.pairedWith!]}
+  const columns = useMemo(() => colSettings
+      .filter(s => s.visible)
+      .filter(s => !secondaryColumnKeys.has(s.key))
+      .sort((a, b) => a.order - b.order)
+      .map(s => {
+        const def = COLUMN_DEFS.find(d => d.key === s.key);
+        const renderer = columnRenderers[s.key];
+        if (!def || !renderer) return null;
+        if (s.pairedWith) {
+          const secondaryDef = COLUMN_DEFS.find(d => d.key === s.pairedWith);
+          const secondaryRenderer = columnRenderers[s.pairedWith];
+          const secondaryVisible = colSettings.find(item => item.key === s.pairedWith)?.visible;
+          if (secondaryDef && secondaryRenderer && secondaryVisible) {
+            return {
+              title: (
+                <span style={SMALL_FONT_COLUMN_KEYS.has(s.key) || SMALL_FONT_COLUMN_KEYS.has(s.pairedWith) ? smallCellStyle : undefined}>
+                  {def.label} / {secondaryDef.label}
+                </span>
+              ),
+              key: s.key,
+              dataIndex: renderer.dataIndex,
+              width: getRelativeWidth(s.key, colSettings, secondaryColumnKeys),
+              ellipsis: renderer.ellipsis && secondaryRenderer.ellipsis,
+              align: renderer.align,
+              sorter: renderer.sorter,
+              render: (v: any, r: any) => (
+                <div style={{ minWidth: 0 }}>
+                  <div>{renderer.render ? renderer.render(v, r) : v}</div>
+                  <div style={nestedCellDividerStyle}>
+                    {secondaryRenderer.render
+                      ? secondaryRenderer.render(r[secondaryRenderer.dataIndex ?? ''], r)
+                      : r[secondaryRenderer.dataIndex ?? s.pairedWith!]}
+                  </div>
                 </div>
-              </div>
-            ),
-          };
+              ),
+            };
+          }
         }
-      }
-      return {
-        title: <span style={SMALL_FONT_COLUMN_KEYS.has(s.key) ? smallCellStyle : undefined}>{def.label}</span>,
-        key: s.key,
-        dataIndex: renderer.dataIndex,
-        width: getRelativeWidth(s.key, colSettings, secondaryColumnKeys),
-        ellipsis: renderer.ellipsis,
-        align: renderer.align,
-        sorter: renderer.sorter,
-        render: renderer.render,
-      };
-    })
-    .filter(Boolean) as any[];
+        return {
+          title: <span style={SMALL_FONT_COLUMN_KEYS.has(s.key) ? smallCellStyle : undefined}>{def.label}</span>,
+          key: s.key,
+          dataIndex: renderer.dataIndex,
+          width: getRelativeWidth(s.key, colSettings, secondaryColumnKeys),
+          ellipsis: renderer.ellipsis,
+          align: renderer.align,
+          sorter: renderer.sorter,
+          render: renderer.render,
+        };
+      })
+      .filter(Boolean) as any[],
+    [colSettings, secondaryColumnKeys, canPay],
+  );
 
   const excelColumns: ExcelColumn[] = colSettings
     .filter(s => s.key !== 'actions')
@@ -415,6 +417,44 @@ const CashierWorkspace: React.FC = () => {
       <Col span={15}>{value}</Col>
     </Row>
   );
+
+  const cashierTable = useMemo(() => (
+    <Card styles={{ body: { padding: 0 } }}>
+      <Tabs
+        style={{ padding: '0 12px' }}
+        activeKey={activeOrgId}
+        onChange={setActiveOrgId}
+        items={orgTabs.map(tab => ({
+          key: tab.id,
+          label: `${tab.name} (${tab.count})`,
+          children: (
+            <Table
+              dataSource={filteredRequests.filter(r => r.organization_id === tab.id)}
+              columns={columns}
+              rowKey="id"
+              loading={loading}
+              size="small"
+              bordered
+              tableLayout="fixed"
+              pagination={{ pageSize: 20, showTotal: total => `Всего: ${total}` }}
+              onRow={(record) => ({
+                onClick: (event) => {
+                  if (shouldIgnoreRowClick(event)) return;
+                  setViewingRequest(record);
+                },
+                style: { cursor: 'pointer' },
+              })}
+            />
+          ),
+        }))}
+      />
+      {!orgTabs.length && (
+        <div style={{ padding: 32, textAlign: 'center' }}>
+          <Text type="secondary">Нет заявок по текущим фильтрам</Text>
+        </div>
+      )}
+    </Card>
+  ), [activeOrgId, columns, filteredRequests, loading, orgTabs]);
 
   return (
     <div style={{ padding: 16 }}>
@@ -480,41 +520,7 @@ const CashierWorkspace: React.FC = () => {
         </Row>
       </Card>
 
-      <Card styles={{ body: { padding: 0 } }}>
-        <Tabs
-          style={{ padding: '0 12px' }}
-          activeKey={activeOrgId}
-          onChange={setActiveOrgId}
-          items={orgTabs.map(tab => ({
-            key: tab.id,
-            label: `${tab.name} (${tab.count})`,
-            children: (
-              <Table
-                dataSource={filteredRequests.filter(r => r.organization_id === tab.id)}
-                columns={columns}
-                rowKey="id"
-                loading={loading}
-                size="small"
-                bordered
-                tableLayout="fixed"
-                pagination={{ pageSize: 20, showTotal: total => `Всего: ${total}` }}
-                onRow={(record) => ({
-                  onClick: (event) => {
-                    if (shouldIgnoreRowClick(event)) return;
-                    setViewingRequest(record);
-                  },
-                  style: { cursor: 'pointer' },
-                })}
-              />
-            ),
-          }))}
-        />
-        {!orgTabs.length && (
-          <div style={{ padding: 32, textAlign: 'center' }}>
-            <Text type="secondary">Нет заявок по текущим фильтрам</Text>
-          </div>
-        )}
-      </Card>
+      {cashierTable}
 
       <ColSettingsDrawer
         open={colDrawerOpen}
@@ -531,6 +537,7 @@ const CashierWorkspace: React.FC = () => {
         title={`Заявка № ${viewingRequest?.request_number ?? viewingRequest?.id?.slice(0, 8).toUpperCase() ?? ''}`}
         width={680}
         centered
+        destroyOnHidden
       >
         {viewingRequest && (
           <div style={{ paddingTop: 8 }}>
