@@ -14,7 +14,6 @@ import {
   RestOutlined, SettingOutlined, MoreOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import apiClient from '../api/apiClient';
-import axios from 'axios';
 import { useAuthStore } from '../store/authStore';
 import { useSearchParams } from 'react-router-dom';
 import { CATEGORY_CONFIG, DATE_PICKER_LOCALE } from '../constants';
@@ -807,8 +806,12 @@ const PaymentRegistry: React.FC = () => {
     setFormLoading(true);
     const pendingFile = fileList.find(f => f.originFileObj)?.originFileObj ?? null;
     try {
+      const normalizedDescription = typeof values.description === 'string'
+        ? values.description.trim()
+        : values.description;
       const payload = {
         ...values,
+        description: normalizedDescription,
         payment_date: values.payment_date?.format('YYYY-MM-DD') ?? null,
       };
       let requestId: string;
@@ -822,11 +825,9 @@ const PaymentRegistry: React.FC = () => {
       if (pendingFile) {
         const fd = new FormData();
         fd.append('file', pendingFile);
-        await axios.post(
-          `http://127.0.0.1:8080/api/v1/requests/${requestId}/upload`,
-          fd,
-          { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } }
-        );
+        await apiClient.post(`/requests/${requestId}/upload`, fd, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        });
       }
       messageApi.success(editingRequest ? 'Заявка обновлена' : 'Заявка создана');
       setIsFormOpen(false);
@@ -905,6 +906,32 @@ const PaymentRegistry: React.FC = () => {
 
 
   // ─── Пометка на удаление ─────────────────────────────────────────────────
+
+  const openLocalFile = (file: File, filename: string) => {
+    const url = URL.createObjectURL(file);
+    if (filename.toLowerCase().endsWith('.pdf')) {
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    } else {
+      setFilePreview({ url, name: filename });
+    }
+  };
+
+  const currentFormFile = fileList[0] ?? null;
+
+  const openFormFile = async () => {
+    const localFile = currentFormFile?.originFileObj;
+    if (localFile instanceof File) {
+      openLocalFile(localFile, currentFormFile.name || localFile.name);
+      return;
+    }
+    if (editingRequest?.id && editingRequest?.file_path) {
+      await openFile(editingRequest.id, editingRequest.file_path);
+      return;
+    }
+    messageApi.info('Файл ещё не прикреплён');
+  };
+
   const handleMarkDeletion = async (id: string, currentMark: boolean) => {
     try {
       await apiClient.patch(`/requests/${id}/mark_deletion`);
@@ -1915,7 +1942,21 @@ const PaymentRegistry: React.FC = () => {
                     </Form.Item>
                   </Col>
                 </Row>
-                <Form.Item name="description" label="Назначение платежа (для банка)" rules={[{ required: true }]}>
+                <Form.Item
+                  name="description"
+                  label="Назначение платежа (для банка)"
+                  rules={[
+                    { required: true, message: 'Пожалуйста, введите назначение платежа (для банка)' },
+                    {
+                      validator: (_, value) => {
+                        if (typeof value !== 'string' || value.trim().length === 0) {
+                          return Promise.reject(new Error('Поле не может состоять только из пробелов'));
+                        }
+                        return Promise.resolve();
+                      },
+                    },
+                  ]}
+                >
                   <Input.TextArea rows={4} />
                 </Form.Item>
                 <Form.Item name="note" label="Описание (смысловое)">
@@ -1959,13 +2000,27 @@ const PaymentRegistry: React.FC = () => {
                   <Input.TextArea rows={4} placeholder="Необязательно" />
                 </Form.Item>
                 <Form.Item label="Файл (скан счёта / акта)">
-                  <Upload maxCount={1} beforeUpload={() => false}
-                    fileList={fileList}
-                    onChange={({ fileList: fl }) => setFileList(fl)}
-                    accept=".pdf,.jpg,.jpeg,.png"
-                  >
-                    <Button icon={<UploadOutlined />}>Выбрать файл</Button>
-                  </Upload>
+                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                    <Upload maxCount={1} beforeUpload={() => false}
+                      fileList={fileList}
+                      onChange={({ fileList: fl }) => setFileList(fl)}
+                      onPreview={async () => { await openFormFile(); }}
+                      showUploadList={{ showPreviewIcon: true }}
+                      accept=".pdf,.jpg,.jpeg,.png"
+                    >
+                      <Button icon={<UploadOutlined />}>Выбрать файл</Button>
+                    </Upload>
+                    {currentFormFile && (
+                      <Button
+                        type="link"
+                        icon={<PaperClipOutlined />}
+                        style={{ padding: 0, width: 'fit-content' }}
+                        onClick={() => { void openFormFile(); }}
+                      >
+                        Открыть файл
+                      </Button>
+                    )}
+                  </Space>
                 </Form.Item>
               </div>
             </Col>

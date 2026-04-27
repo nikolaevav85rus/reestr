@@ -1,5 +1,18 @@
 {
+  "scripts": {
+    "dev": "npm run dev:all",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "venv\\Scripts\\python.exe -m app.main",
+    "dev:all": "concurrently --kill-others-on-fail --names FRONT,BACK --prefix-colors blue,green \"npm run dev:frontend\" \"npm run dev:backend\"",
+    "build": "npm --prefix frontend run build",
+    "test:api": "npm --prefix frontend run test:api",
+    "test:e2e": "npm --prefix frontend run test:e2e",
+    "test:regression": "npm --prefix frontend run test:regression"
+  },
   "dependencies": {
     "zustand": "^5.0.12"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   }
 }

@@ -91,6 +91,45 @@ test.describe('UI regression: request workflow', () => {
     await expect(page.locator('.ant-alert')).toBeVisible({ timeout: 15_000 });
   });
 
+  test('new request with PDF uploads via relative API path (regression: no hardcoded backend host)', async ({ page }) => {
+    test.skip(!allowedScenario, 'No allowed calendar/dictionary data found for UI upload scenario.');
+
+    const uploadMarker = marker('REG-P0-UI-UPLOAD');
+    const paymentDate = allowedScenario!.date.split('-').reverse().join('.');
+    const uploadRequestPromise = page.waitForRequest((request) => {
+      if (request.method() !== 'POST') return false;
+      const pathname = new URL(request.url()).pathname;
+      return /^\/api\/v1\/requests\/[^/]+\/upload$/.test(pathname);
+    });
+
+    await loginUi(page, USERS.initiator);
+    await openNewRequestModal(page);
+    await selectFirstOption(page, 0);
+    await selectFirstOption(page, 1);
+    await selectFirstOption(page, 2);
+    await page.locator('.ant-modal input#counterparty').fill(`Upload check ${uploadMarker}`);
+    await page.locator('.ant-modal input#amount').fill('1234');
+    await page.locator('.ant-modal .ant-picker input').fill(paymentDate);
+    await page.keyboard.press('Enter');
+    await page.locator('.ant-modal textarea#description').fill(uploadMarker);
+    await page.locator('.ant-modal input[type="file"]').setInputFiles({
+      name: `${uploadMarker}.pdf`,
+      mimeType: 'application/pdf',
+      buffer: Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n'),
+    });
+    await page.locator('.ant-modal .ant-modal-footer .ant-btn-primary').click();
+
+    const uploadRequest = await uploadRequestPromise;
+    const uploadUrl = new URL(uploadRequest.url());
+    const uiOrigin = new URL(page.url()).origin;
+    expect(uploadUrl.pathname).toMatch(/^\/api\/v1\/requests\/[^/]+\/upload$/);
+    expect(uploadUrl.origin).toBe(uiOrigin);
+    expect(uploadRequest.url()).not.toContain('127.0.0.1:8080');
+    expect(uploadRequest.url()).not.toContain('localhost:8080');
+
+    await assertMarkerVisible(page, uploadMarker);
+  });
+
   test('role action layer exposes the expected primary workflow actions', async ({ page }) => {
     test.setTimeout(120_000);
     test.skip(!allowedScenario, 'No allowed calendar/dictionary data found for UI workflow scenario.');
