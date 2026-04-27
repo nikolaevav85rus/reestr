@@ -30,6 +30,10 @@ def has_perm(user: User, perm: str) -> bool:
     if not user.role or not user.role.permissions:
         return False
     return any(p.name == perm for p in user.role.permissions)
+
+def request_title(req) -> str:
+    return f"Заявка № {req.request_number or str(req.id)[:8].upper()}"
+
 SUBMIT_CUTOFF_HOUR = 11  # До 11:00 МСК — обычный приём
 
 ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
@@ -219,7 +223,7 @@ async def submit_request(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
-    if req.creator_id != current_user.id and not current_user.is_superadmin:
+    if req.creator_id != current_user.id and not has_perm(current_user, "req_edit_all"):
         raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
 
     allowed_statuses = {ApprovalStatus.DRAFT, ApprovalStatus.CLARIFICATION, ApprovalStatus.POSTPONED}
@@ -342,7 +346,7 @@ async def reject_gate(
     await notif_svc.create_notification(
         db, user_id=req.creator_id, request_id=req.id,
         notif_type="GATE_REJECTED",
-        text=f"Запрос на экстренный платёж отклонён ФЭО: {body.reason or '—'}",
+        text=f"{request_title(req)}: запрос на экстренный платёж отклонён ФЭО. Причина: {body.reason or '—'}",
     )
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
@@ -397,7 +401,59 @@ async def reject_memo(
     await notif_svc.create_notification(
         db, user_id=req.creator_id, request_id=req.id,
         notif_type="REJECTED",
-        text=f"Внебюджетный платёж не утверждён: {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}",
+        text=f"{request_title(req)}: внебюджетный платёж не утверждён. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}",
+    )
+    await db.commit()
+    return await request_service.get_request_by_id(db, request_id)
+
+
+@router.post("/{request_id}/memo_reason", response_model=RequestResponse)
+async def memo_reason(
+    request_id: UUID,
+    body: StatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(PermissionChecker("req_view_own"))
+):
+    req = await request_service.get_request_by_id(db, request_id)
+    if not req:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    if req.creator_id != current_user.id and not has_perm(current_user, "req_edit_all"):
+        raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
+    if req.approval_status != ApprovalStatus.MEMO_REQUIRED:
+        raise HTTPException(status_code=400, detail="Заявка не ожидает обоснования вне бюджета")
+    if not body.reason or not body.reason.strip():
+        raise HTTPException(status_code=400, detail="Укажите обоснование вне бюджета")
+    req.rejection_reason = body.reason.strip()
+    req.approval_status = ApprovalStatus.PENDING_MEMO
+    await notif_svc.create_notification(
+        db, user_id=req.creator_id, request_id=req.id,
+        notif_type="OFF_BUDGET",
+        text=f"{request_title(req)}: добавлено обоснование вне бюджета. {req.counterparty}, {req.amount:,.0f} ₽.",
+    )
+    await db.commit()
+    return await request_service.get_request_by_id(db, request_id)
+
+
+@router.post("/{request_id}/cancel_memo", response_model=RequestResponse)
+async def cancel_memo(
+    request_id: UUID,
+    body: StatusUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(PermissionChecker("req_view_own"))
+):
+    req = await request_service.get_request_by_id(db, request_id)
+    if not req:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    if req.creator_id != current_user.id and not has_perm(current_user, "req_edit_all"):
+        raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
+    if req.approval_status != ApprovalStatus.MEMO_REQUIRED:
+        raise HTTPException(status_code=400, detail="Отменить можно только заявку, ожидающую обоснования вне бюджета")
+    req.approval_status = ApprovalStatus.REJECTED
+    req.rejection_reason = body.reason or "Отменена инициатором"
+    await notif_svc.create_notification(
+        db, user_id=req.creator_id, request_id=req.id,
+        notif_type="REJECTED",
+        text=f"{request_title(req)}: отменена. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {req.rejection_reason}",
     )
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
@@ -408,15 +464,15 @@ async def move_to_draft(
     request_id: UUID,
     data: dict,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(PermissionChecker("req_create"))
+    current_user: User = Depends(PermissionChecker("req_view_own"))
 ):
     """Инициатор переносит заявку из PENDING_MEMO обратно в DRAFT с новой датой."""
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
-    if req.creator_id != current_user.id and not current_user.is_superadmin:
+    if req.creator_id != current_user.id and not has_perm(current_user, "req_edit_all"):
         raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
-    allowed = {ApprovalStatus.PENDING_MEMO, ApprovalStatus.POSTPONED}
+    allowed = {ApprovalStatus.MEMO_REQUIRED, ApprovalStatus.PENDING_MEMO, ApprovalStatus.POSTPONED}
     if req.approval_status not in allowed:
         raise HTTPException(status_code=400, detail="Перенос доступен только для заявок в статусе 'Вне бюджета' или 'Перенесено'")
     from datetime import date as date_type
@@ -424,13 +480,14 @@ async def move_to_draft(
     new_date = data.get("payment_date")
     if new_date:
         req.payment_date = date_type.fromisoformat(new_date)
-    if req.approval_status == ApprovalStatus.PENDING_MEMO:
+    if req.approval_status in {ApprovalStatus.MEMO_REQUIRED, ApprovalStatus.PENDING_MEMO}:
         req.is_budgeted = None
+        req.rejection_reason = None
     req.approval_status = ApprovalStatus.DRAFT
     old_str = old_date.strftime('%d.%m.%Y') if old_date else '—'
     new_str = req.payment_date.strftime('%d.%m.%Y') if req.payment_date else '—'
     db.add(Notification(user_id=req.creator_id, request_id=req.id,
-        text=f"Инициатор перенёс дату с {old_str} на {new_str}: {req.counterparty}, {req.amount:,.0f} ₽",
+        text=f"{request_title(req)}: инициатор перенёс дату с {old_str} на {new_str}. {req.counterparty}, {req.amount:,.0f} ₽",
         type="RESCHEDULED"))
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
@@ -447,9 +504,19 @@ async def set_budget_status(
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     new_value = data.get("is_budgeted", req.is_budgeted)
     req.is_budgeted = new_value
-    # Если ФЭО явно выставляет «Нет» и заявка на согласовании — переводим в PENDING_MEMO
+    # Если ФЭО явно выставляет «Нет» и заявка на согласовании — сначала запрашиваем обоснование у инициатора
     if new_value is False and req.approval_status == ApprovalStatus.PENDING:
-        req.approval_status = ApprovalStatus.PENDING_MEMO
+        req.approval_status = ApprovalStatus.MEMO_REQUIRED
+        req.rejection_reason = None
+        db.add(Notification(
+            user_id=req.creator_id,
+            request_id=req.id,
+            text=f"{request_title(req)}: требуется обоснование вне бюджета. {req.counterparty}, {req.amount:,.0f} ₽.",
+            type="OFF_BUDGET",
+        ))
+    elif new_value is True and req.approval_status == ApprovalStatus.MEMO_REQUIRED:
+        req.approval_status = ApprovalStatus.PENDING
+        req.rejection_reason = None
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 
@@ -477,15 +544,15 @@ async def suspend_request(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
-    if req.approval_status != ApprovalStatus.APPROVED:
-        raise HTTPException(status_code=400, detail="Отложить можно только согласованную заявку")
+    if req.approval_status not in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}:
+        raise HTTPException(status_code=400, detail="Отложить можно только заявку на согласовании или согласованную заявку")
     req.approval_status = ApprovalStatus.SUSPENDED
     req.rejection_reason = body.reason
     await db.commit()
     await notif_svc.create_notification(
         db, user_id=req.creator_id, request_id=req.id,
         notif_type="SUSPENDED",
-        text=f"Заявка отложена: {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}",
+        text=f"{request_title(req)}: отложена. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}",
     )
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
@@ -517,7 +584,7 @@ async def unsuspend_request(
     await notif_svc.create_notification(
         db, user_id=req.creator_id, request_id=req.id,
         notif_type="RESCHEDULED",
-        text=f"Заявка перенесена с {old_str} на {new_str}: {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование.",
+        text=f"{request_title(req)}: перенесена с {old_str} на {new_str}. {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование.",
     )
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
@@ -553,7 +620,7 @@ async def approve_request(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("req_approve"))
 ):
-    return await request_service.update_request_status(db, request_id, ApprovalStatus.APPROVED)
+    return await request_service.update_request_status(db, request_id, ApprovalStatus.APPROVED, current_user=current_user)
 
 @router.post("/{request_id}/reject", response_model=RequestResponse)
 async def reject_request(
@@ -562,7 +629,7 @@ async def reject_request(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("req_approve"))
 ):
-    return await request_service.update_request_status(db, request_id, ApprovalStatus.REJECTED, reason=body.reason)
+    return await request_service.update_request_status(db, request_id, ApprovalStatus.REJECTED, reason=body.reason, current_user=current_user)
 
 @router.post("/{request_id}/clarify", response_model=RequestResponse)
 async def clarify_request(
@@ -571,7 +638,7 @@ async def clarify_request(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("req_approve"))
 ):
-    return await request_service.update_request_status(db, request_id, ApprovalStatus.CLARIFICATION, reason=body.reason)
+    return await request_service.update_request_status(db, request_id, ApprovalStatus.CLARIFICATION, reason=body.reason, current_user=current_user)
 
 @router.post("/{request_id}/postpone", response_model=RequestResponse)
 async def postpone_request(
@@ -592,7 +659,7 @@ async def postpone_request(
     old_str = old_date.strftime('%d.%m.%Y') if old_date else '—'
     new_str = req.payment_date.strftime('%d.%m.%Y') if req.payment_date else '—'
     date_info = f"с {old_str} на {new_str}" if body.payment_date else f"(дата оплаты: {old_str})"
-    text = f"Заявка перенесена {date_info}: {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}"
+    text = f"{request_title(req)}: перенесена {date_info}. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}"
     db.add(Notification(user_id=req.creator_id, request_id=req.id, text=text, type="POSTPONED"))
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
@@ -603,7 +670,7 @@ async def pay_request(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("req_pay"))
 ):
-    return await request_service.update_payment_status(db, request_id, PaymentStatus.PAID)
+    return await request_service.update_payment_status(db, request_id, PaymentStatus.PAID, current_user=current_user)
 
 
 @router.patch("/{request_id}/mark_deletion", response_model=RequestResponse)

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import {
   App as AntdApp, Button, Card, Col, DatePicker, Dropdown, Input, InputNumber,
-  Modal, Row, Select, Space, Switch, Table, Tag, Timeline, Tooltip, Typography, Tabs,
+  Modal, Row, Select, Space, Switch, Table, Tag, Tooltip, Typography, Tabs,
 } from 'antd';
 import type { MenuProps } from 'antd';
 import {
@@ -14,11 +14,14 @@ import { useAuthStore } from '../store/authStore';
 import { CATEGORY_CONFIG, DATE_PICKER_LOCALE } from '../constants';
 import ColSettingsDrawer from './ColSettingsDrawer';
 import type { ColDef, ColSetting } from './ColSettingsDrawer';
+import RequestDetailsCard from '../components/RequestDetailsCard';
 import { exportRowsToExcel, formatDateRu, formatMoney, type ExcelColumn } from '../utils/excelExport';
 
 const { Title, Text } = Typography;
 
 const APPROVAL_CONFIG: Record<string, { label: string; color: string }> = {
+  MEMO_REQUIRED: { label: 'Требует обоснования', color: 'orange' },
+  PENDING_MEMO: { label: 'Вне бюджета', color: 'volcano' },
   APPROVED: { label: 'Согласовано', color: 'green' },
 };
 
@@ -34,13 +37,17 @@ const CONTRACT_CONFIG: Record<string, { label: string; color: string }> = {
   'false': { label: 'Нет', color: 'red' },
 };
 const MODAL_TOP_STYLE: React.CSSProperties = { top: 24 };
+const REQUEST_MODAL_WIDTH = 'min(1180px, calc(100vw - 96px))';
 
 const HISTORY_COLOR: Record<string, string> = {
+  APPROVED: 'green',
+  PAID: 'green',
   SUSPENDED: 'red',
   RESCHEDULED: 'green',
   REJECTED: 'red',
   CLARIFICATION: 'blue',
   POSTPONED: 'orange',
+  MEMO_REQUIRED: 'orange',
   GATE_REJECTED: 'purple',
   OFF_BUDGET: 'orange',
   EOD_UNPAID: 'gray',
@@ -48,6 +55,8 @@ const HISTORY_COLOR: Record<string, string> = {
 
 const COLUMN_DEFS: ColDef[] = [
   { key: 'payment_date', label: 'Дата оплаты', defaultWidth: 150, defaultVisible: true, required: true },
+  { key: 'request_number', label: '№ заявки', defaultWidth: 120, defaultVisible: true },
+  { key: 'file', label: 'Счёт', defaultWidth: 90, defaultVisible: true },
   { key: 'organization', label: 'Организация', defaultWidth: 150, defaultVisible: true },
   { key: 'direction', label: 'ЦФО', defaultWidth: 150, defaultVisible: true },
   { key: 'counterparty', label: 'Контрагент', defaultWidth: 170, defaultVisible: true },
@@ -83,7 +92,26 @@ function loadColSettings(userId?: string): ColSetting[] {
     let offset = 0;
     for (const d of COLUMN_DEFS) {
       if (!existingKeys.has(d.key)) {
-        saved.push({ key: d.key, visible: d.defaultVisible, order: maxOrder + (++offset), width: Math.max(1, Math.round(d.defaultWidth / 10)) });
+        let order = maxOrder + (++offset);
+        if (d.key === 'request_number') {
+          const paymentDateOrder = saved.find(s => s.key === 'payment_date')?.order;
+          if (paymentDateOrder !== undefined) {
+            saved.forEach(s => {
+              if (s.order > paymentDateOrder) s.order += 1;
+            });
+            order = paymentDateOrder + 1;
+          }
+        }
+        if (d.key === 'file') {
+          const requestNumberOrder = saved.find(s => s.key === 'request_number')?.order;
+          if (requestNumberOrder !== undefined) {
+            saved.forEach(s => {
+              if (s.order > requestNumberOrder) s.order += 1;
+            });
+            order = requestNumberOrder + 1;
+          }
+        }
+        saved.push({ key: d.key, visible: d.defaultVisible, order, width: Math.max(1, Math.round(d.defaultWidth / 10)) });
       }
     }
     return saved;
@@ -96,17 +124,34 @@ function saveColSettings(userId: string | undefined, settings: ColSetting[]): vo
   localStorage.setItem(`ui_cashier_cols_${userId ?? 'default'}`, JSON.stringify(settings));
 }
 
+type CashierFilterState = {
+  date?: string | null;
+  payment?: string;
+  counterparty?: string;
+  budgetItem?: string;
+  amountFrom?: number;
+  amountTo?: number;
+};
+
+function loadCashierFilters(userId?: string): CashierFilterState {
+  try {
+    const raw = localStorage.getItem(`ui_cashier_filters_${userId ?? 'default'}`);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveCashierFilters(userId: string | undefined, filters: CashierFilterState): void {
+  localStorage.setItem(`ui_cashier_filters_${userId ?? 'default'}`, JSON.stringify(filters));
+}
+
 function getRelativeWidth(key: string, settings: ColSetting[], secondaryKeys: Set<string>): string {
   const visible = settings.filter(s => s.visible && !secondaryKeys.has(s.key));
   const total = visible.reduce((sum, s) => sum + normalizeColSettingWidth(s.width), 0) || 1;
   const setting = visible.find(s => s.key === key);
   const weight = normalizeColSettingWidth(setting?.width ?? 10);
   return `${(weight / total) * 100}%`;
-}
-
-function shouldIgnoreRowClick(event: React.MouseEvent<HTMLElement>) {
-  const target = event.target as HTMLElement | null;
-  return !!target?.closest('button,a,input,textarea,select,[role="button"],.ant-btn,.ant-select,.ant-picker,.ant-checkbox,.ant-radio,.ant-switch,.ant-upload');
 }
 
 const textCellStyle: React.CSSProperties = {
@@ -129,12 +174,19 @@ const wrapTextCellStyle: React.CSSProperties = {
 const smallCellStyle: React.CSSProperties = { fontSize: 12 };
 const smallWrapTextCellStyle: React.CSSProperties = { ...wrapTextCellStyle, ...smallCellStyle };
 const smallTextCellStyle: React.CSSProperties = { ...textCellStyle, ...smallCellStyle };
+const smallLinkWrapTextCellStyle: React.CSSProperties = {
+  ...smallWrapTextCellStyle,
+  padding: 0,
+  height: 'auto',
+  fontWeight: 600,
+  textAlign: 'left',
+};
 const nestedCellDividerStyle: React.CSSProperties = {
   borderTop: '1px solid #f0f0f0',
   marginTop: 5,
   paddingTop: 5,
 };
-const SMALL_FONT_COLUMN_KEYS = new Set(['payment_date', 'creator', 'direction', 'counterparty', 'note', 'description', 'amount']);
+const SMALL_FONT_COLUMN_KEYS = new Set(['payment_date', 'request_number', 'file', 'creator', 'direction', 'counterparty', 'note', 'description', 'amount']);
 const STATUS_COLUMN_KEYS = new Set(['budget_item', 'payment_status', 'contract_status']);
 const statusCellStyle: React.CSSProperties = {
   minWidth: 0,
@@ -153,10 +205,14 @@ const statusTagStyle: React.CSSProperties = {
   marginInlineEnd: 0,
   fontSize: 12,
   lineHeight: 1.2,
+  maxWidth: '100%',
+  whiteSpace: 'normal',
+  overflowWrap: 'break-word',
+  wordBreak: 'normal',
+  textAlign: 'center',
 };
 const secondaryStatusStyle: React.CSSProperties = {
   ...statusTagStyle,
-  minWidth: 104,
 };
 const centeredPairCellStyle: React.CSSProperties = {
   minWidth: 0,
@@ -190,12 +246,13 @@ const CashierWorkspace: React.FC = () => {
   const [budgetItems, setBudgetItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeOrgId, setActiveOrgId] = useState<string>();
-  const [filterDate, setFilterDate] = useState<any>(() => dayjs());
-  const [filterPayment, setFilterPayment] = useState<string | undefined>();
-  const [filterCounterparty, setFilterCounterparty] = useState('');
-  const [filterBudgetItem, setFilterBudgetItem] = useState<string | undefined>();
-  const [filterAmountFrom, setFilterAmountFrom] = useState<number | undefined>();
-  const [filterAmountTo, setFilterAmountTo] = useState<number | undefined>();
+  const initialFilters = useMemo(() => loadCashierFilters(user?.id), [user?.id]);
+  const [filterDate, setFilterDate] = useState<any>(() => initialFilters.date ? dayjs(initialFilters.date) : dayjs());
+  const [filterPayment, setFilterPayment] = useState<string | undefined>(() => initialFilters.payment);
+  const [filterCounterparty, setFilterCounterparty] = useState(() => initialFilters.counterparty ?? '');
+  const [filterBudgetItem, setFilterBudgetItem] = useState<string | undefined>(() => initialFilters.budgetItem);
+  const [filterAmountFrom, setFilterAmountFrom] = useState<number | undefined>(() => initialFilters.amountFrom);
+  const [filterAmountTo, setFilterAmountTo] = useState<number | undefined>(() => initialFilters.amountTo);
   const [showFilters, setShowFilters] = useState<boolean>(() => {
     return localStorage.getItem('ui_cashier_show_filters') !== 'false';
   });
@@ -282,18 +339,51 @@ const CashierWorkspace: React.FC = () => {
     }
   };
 
+  const openFile = async (requestId: string) => {
+    try {
+      const response = await apiClient.get(`/requests/${requestId}/file`, { responseType: 'blob' });
+      const url = URL.createObjectURL(response.data);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    } catch {
+      messageApi.error('Не удалось открыть файл счёта');
+    }
+  };
+
   const renderActions = (r: any) => {
     if (canPay && r.approval_status === 'APPROVED' && r.payment_status === 'UNPAID') {
       return (
-        <Button size="small" type="primary" icon={<DollarOutlined />} onClick={() => handlePay(r.id)}>
+        <Button
+          size="small"
+          type="primary"
+          icon={<DollarOutlined />}
+          data-row-action="true"
+          onClick={(event) => {
+            event.stopPropagation();
+            handlePay(r.id);
+          }}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
           Оплатить
         </Button>
       );
     }
-    const menu: MenuProps = { items: [{ key: 'view', label: 'Открыть карточку' }], onClick: () => setViewingRequest(r) };
+    const menu: MenuProps = {
+      items: [{ key: 'view', label: 'Открыть карточку' }],
+      onClick: ({ domEvent }) => {
+        domEvent.stopPropagation();
+        setViewingRequest(r);
+      },
+    };
     return (
       <Dropdown menu={menu} trigger={['click']}>
-        <Button type="text" size="small" icon={<MoreOutlined />} aria-label="Дополнительные действия" />
+        <span
+          data-row-action="true"
+          onClick={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <Button type="text" size="small" icon={<MoreOutlined />} aria-label="Дополнительные действия" />
+        </span>
       </Dropdown>
     );
   };
@@ -304,13 +394,47 @@ const CashierWorkspace: React.FC = () => {
       sorter: (a: any, b: any) => (a.payment_date ?? '').localeCompare(b.payment_date ?? ''),
       render: (v: string) => v ? <span style={smallTextCellStyle}>{formatDateRu(v)}</span> : <Text type="secondary">—</Text>,
     },
+    request_number: {
+      dataIndex: 'request_number',
+      sorter: (a: any, b: any) => (a.request_number ?? '').localeCompare(b.request_number ?? ''),
+      render: (v: string, r: any) => (
+        <Button
+          type="link"
+          style={smallLinkWrapTextCellStyle}
+          onClick={(event) => {
+            event.stopPropagation();
+            setViewingRequest(r);
+          }}
+        >
+          {v || r.id?.slice(0, 8).toUpperCase() || '—'}
+        </Button>
+      ),
+    },
+    file: {
+      sorter: (a: any, b: any) => (a.file_path ?? '').localeCompare(b.file_path ?? ''),
+      align: 'center' as const,
+      render: (_: any, r: any) => r.file_path ? (
+        <Button
+          type="link"
+          size="small"
+          icon={<PaperClipOutlined />}
+          style={{ padding: 0, height: 'auto', fontSize: 12 }}
+          onClick={(event) => {
+            event.stopPropagation();
+            openFile(r.id);
+          }}
+        >
+          Открыть
+        </Button>
+      ) : <Text type="secondary">—</Text>,
+    },
     organization: {
       sorter: (a: any, b: any) => (a.organization?.name ?? '').localeCompare(b.organization?.name ?? ''),
       render: (_: any, r: any) => nativeTitleText(r.organization?.name),
     },
     direction: {
       sorter: (a: any, b: any) => (a.direction?.name ?? '').localeCompare(b.direction?.name ?? ''),
-      render: (_: any, r: any) => nativeTitleText(r.direction?.name, smallTextCellStyle),
+      render: (_: any, r: any) => nativeTitleText(r.direction?.name, smallWrapTextCellStyle),
     },
     counterparty: {
       dataIndex: 'counterparty',
@@ -330,7 +454,7 @@ const CashierWorkspace: React.FC = () => {
     },
     creator: {
       sorter: (a: any, b: any) => (a.creator?.full_name ?? '').localeCompare(b.creator?.full_name ?? ''),
-      render: (_: any, r: any) => r.creator?.full_name ? <span style={smallTextCellStyle}>{r.creator.full_name}</span> : <Text type="secondary">—</Text>,
+      render: (_: any, r: any) => r.creator?.full_name ? nativeTitleText(r.creator.full_name, smallWrapTextCellStyle) : <Text type="secondary">—</Text>,
     },
     budget_item: {
       sorter: (a: any, b: any) => (a.budget_item?.name ?? '').localeCompare(b.budget_item?.name ?? ''),
@@ -436,6 +560,7 @@ const CashierWorkspace: React.FC = () => {
       order: s.order,
       value: (r: any) => {
         if (s.key === 'payment_date') return formatDateRu(r.payment_date);
+        if (s.key === 'file') return r.file_path ?? '';
         if (s.key === 'organization') return r.organization?.name;
         if (s.key === 'direction') return r.direction?.name;
         if (s.key === 'creator') return r.creator?.full_name;
@@ -461,12 +586,19 @@ const CashierWorkspace: React.FC = () => {
     setFilterAmountTo(undefined);
   };
 
-  const row = (label: string, value: React.ReactNode) => (
-    <Row style={{ marginBottom: 8 }}>
-      <Col span={9}><Text type="secondary">{label}</Text></Col>
-      <Col span={15}>{value}</Col>
-    </Row>
-  );
+  useEffect(() => {
+    saveCashierFilters(user?.id, {
+      date: filterDate?.format?.('YYYY-MM-DD') ?? null,
+      payment: filterPayment,
+      counterparty: filterCounterparty,
+      budgetItem: filterBudgetItem,
+      amountFrom: filterAmountFrom,
+      amountTo: filterAmountTo,
+    });
+  }, [
+    user?.id, filterDate, filterPayment, filterCounterparty,
+    filterBudgetItem, filterAmountFrom, filterAmountTo,
+  ]);
 
   const cashierTable = useMemo(() => (
     <Card styles={{ body: { padding: 0 } }}>
@@ -487,14 +619,7 @@ const CashierWorkspace: React.FC = () => {
               bordered
               tableLayout="fixed"
               sticky={{ offsetHeader: 0 }}
-              pagination={{ pageSize: 20, showTotal: total => `Всего: ${total}` }}
-              onRow={(record) => ({
-                onClick: (event) => {
-                  if (shouldIgnoreRowClick(event)) return;
-                  setViewingRequest(record);
-                },
-                style: { cursor: 'pointer' },
-              })}
+              pagination={false}
             />
           ),
         }))}
@@ -600,38 +725,22 @@ const CashierWorkspace: React.FC = () => {
         onCancel={() => setViewingRequest(null)}
         footer={<Button onClick={() => setViewingRequest(null)}>Закрыть</Button>}
         title={`Заявка № ${viewingRequest?.request_number ?? viewingRequest?.id?.slice(0, 8).toUpperCase() ?? ''}`}
-        width={680}
+        width={REQUEST_MODAL_WIDTH}
         style={MODAL_TOP_STYLE}
         destroyOnHidden
       >
         {viewingRequest && (
-          <div style={{ paddingTop: 8 }}>
-            {row('Организация', <Text strong>{viewingRequest.organization?.name ?? '—'}</Text>)}
-            {row('ЦФО', <Text>{viewingRequest.direction?.name ?? '—'}</Text>)}
-            {row('Контрагент', <Text>{viewingRequest.counterparty}</Text>)}
-            {row('Статья ДДС', viewingRequest.budget_item ? <Text>{viewingRequest.budget_item.name}</Text> : <Text type="secondary">—</Text>)}
-            {row('Сумма', <Text strong>{viewingRequest.amount?.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽</Text>)}
-            {row('Дата оплаты', <Text>{formatDateRu(viewingRequest.payment_date)}</Text>)}
-            {row('Согласование', <Tag color={APPROVAL_CONFIG[viewingRequest.approval_status]?.color ?? 'default'}>{APPROVAL_CONFIG[viewingRequest.approval_status]?.label ?? viewingRequest.approval_status}</Tag>)}
-            {row('Оплата', <Tag color={PAYMENT_CONFIG[viewingRequest.payment_status]?.color ?? 'default'}>{PAYMENT_CONFIG[viewingRequest.payment_status]?.label ?? viewingRequest.payment_status}</Tag>)}
-            {row('Назначение платежа', <Text>{viewingRequest.description}</Text>)}
-            {viewingRequest.note && row('Описание', <Text>{viewingRequest.note}</Text>)}
-            {viewingRequest.file_path && row('Файл', <Button type="link" icon={<PaperClipOutlined />} style={{ padding: 0 }}>{viewingRequest.file_path}</Button>)}
-            {requestHistory.length > 0 && (
-              <>
-                <Title level={5} style={{ marginTop: 16 }}>История</Title>
-                <Timeline items={requestHistory.map(h => ({
-                  color: HISTORY_COLOR[h.type] ?? 'gray',
-                  children: (
-                    <div>
-                      <Text type="secondary" style={{ fontSize: 12 }}>{new Date(h.created_at).toLocaleString('ru-RU')}</Text>
-                      <div><Text>{h.text}</Text></div>
-                    </div>
-                  ),
-                }))} />
-              </>
-            )}
-          </div>
+          <RequestDetailsCard
+            request={viewingRequest}
+            history={requestHistory}
+            approvalConfig={APPROVAL_CONFIG}
+            paymentConfig={PAYMENT_CONFIG}
+            contractConfig={CONTRACT_CONFIG}
+            categoryConfig={CATEGORY_CONFIG}
+            historyColor={HISTORY_COLOR}
+            onOpenFile={(requestId) => openFile(requestId)}
+            actions={renderActions(viewingRequest)}
+          />
         )}
       </Modal>
       <style>{`

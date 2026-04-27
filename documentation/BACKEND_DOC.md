@@ -58,6 +58,7 @@ Approval status:
 - `DRAFT` — черновик;
 - `PENDING_GATE` — требует исключения из регламента;
 - `PENDING` — на согласовании ФЭО;
+- `MEMO_REQUIRED` — вне бюджета, требуется обоснование инициатора;
 - `PENDING_MEMO` — вне бюджета, ожидает решения директора;
 - `APPROVED` — согласовано;
 - `REJECTED` — отклонено;
@@ -83,6 +84,8 @@ Payment status:
 - `POST /requests/{id}/reject` — отклонить заявку.
 - `POST /requests/{id}/clarify` — вернуть на уточнение.
 - `POST /requests/{id}/postpone` — перенести заявку.
+- `POST /requests/{id}/memo_reason` — добавить обоснование вне бюджета и передать заявку директору.
+- `POST /requests/{id}/cancel_memo` — отменить внебюджетную заявку до передачи директору.
 - `POST /requests/{id}/approve_memo` — утвердить вне бюджета.
 - `POST /requests/{id}/reject_memo` — отклонить вне бюджета.
 - `POST /requests/{id}/suspend` — отложить согласованную неоплаченную заявку.

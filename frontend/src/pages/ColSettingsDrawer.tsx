@@ -8,6 +8,7 @@ export interface ColDef {
   defaultWidth: number;
   defaultVisible: boolean;
   required?: boolean;
+  defaultPairedWith?: string;
 }
 
 export interface ColSetting {
@@ -54,6 +55,7 @@ const ColSettingsDrawer: React.FC<Props> = ({ open, onClose, settings, onChange,
       visible: d.defaultVisible,
       order: i,
       width: d.defaultWidth,
+      pairedWith: d.defaultPairedWith,
     }));
 
   const update = (key: string, patch: Partial<ColSetting>) =>
@@ -102,7 +104,7 @@ const ColSettingsDrawer: React.FC<Props> = ({ open, onClose, settings, onChange,
               onChange(defaults);
             }}
           >
-            Сбросить
+            По умолчанию
           </Button>
         </Space>
       }

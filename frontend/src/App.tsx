@@ -78,7 +78,7 @@ const NotificationBell: React.FC = () => {
   const typeColors: Record<string, string> = {
     REJECTED: '#ff4d4f', GATE_REJECTED: '#ff4d4f',
     CLARIFICATION: '#fa8c16', POSTPONED: '#faad14',
-    SUSPENDED: '#eb2f96', EOD_UNPAID: '#8c8c8c', OFF_BUDGET: '#722ed1',
+    SUSPENDED: '#eb2f96', MEMO_REQUIRED: '#fa8c16', EOD_UNPAID: '#8c8c8c', OFF_BUDGET: '#722ed1',
   };
 
   const items = notifications.length === 0

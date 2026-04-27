@@ -3,7 +3,7 @@ import dayjs from 'dayjs';
 import {
   Table, Tag, Button, Space, Typography, Card, Row, Col,
   Select, Input, Modal, Form, InputNumber, DatePicker,
-  App as AntdApp, Alert, Popconfirm, Tooltip, Divider, Upload, Switch, Segmented, Timeline, Dropdown, Tabs,
+  App as AntdApp, Alert, Popconfirm, Tooltip, Upload, Switch, Segmented, Dropdown, Tabs,
 } from 'antd';
 import type { MenuProps, UploadFile } from 'antd';
 import {
@@ -20,6 +20,7 @@ import { useSearchParams } from 'react-router-dom';
 import { CATEGORY_CONFIG, DATE_PICKER_LOCALE } from '../constants';
 import ColSettingsDrawer from './ColSettingsDrawer';
 import type { ColDef, ColSetting } from './ColSettingsDrawer';
+import RequestDetailsCard from '../components/RequestDetailsCard';
 import { exportRowsToExcel, formatDateRu, formatMoney, type ExcelColumn } from '../utils/excelExport';
 
 const { Title, Text } = Typography;
@@ -36,26 +37,32 @@ type GatePreview = {
 // ─── Конфиг колонок ──────────────────────────────────────────────────────────
 
 const COLUMN_DEFS: ColDef[] = [
-  { key: 'payment_date',    label: 'Дата оплаты',        defaultWidth: 180, defaultVisible: true,  required: true },
-  { key: 'organization',    label: 'Организация',         defaultWidth: 130, defaultVisible: true  },
-  { key: 'direction',       label: 'Направление',         defaultWidth: 130, defaultVisible: true  },
-  { key: 'counterparty',    label: 'Контрагент',          defaultWidth: 150, defaultVisible: true  },
-  { key: 'description',     label: 'Назначение платежа',  defaultWidth: 170, defaultVisible: true  },
-  { key: 'note',            label: 'Описание',            defaultWidth: 170, defaultVisible: true  },
-  { key: 'creator',         label: 'Инициатор',           defaultWidth: 130, defaultVisible: true  },
-  { key: 'budget_item',     label: 'Статья ДДС',          defaultWidth: 130, defaultVisible: true  },
-  { key: 'amount',          label: 'Сумма',               defaultWidth: 120, defaultVisible: true,  required: true },
-  { key: 'approval_status', label: 'Согласование',        defaultWidth: 160, defaultVisible: true  },
-  { key: 'contract_status', label: 'Договор',             defaultWidth: 145, defaultVisible: true  },
-  { key: 'is_budgeted',     label: 'Бюджет',              defaultWidth: 135, defaultVisible: true  },
-  { key: 'payment_status',  label: 'Оплата',              defaultWidth: 110, defaultVisible: true  },
-  { key: 'special_icon',    label: '⚡',                  defaultWidth: 40,  defaultVisible: true,  required: true },
-  { key: 'actions',         label: 'Действия',            defaultWidth: 110, defaultVisible: true,  required: true },
+  { key: 'payment_date',    label: 'Дата оплаты',        defaultWidth: 7,  defaultVisible: true,  required: true },
+  { key: 'request_number',  label: '№ заявки',           defaultWidth: 9,  defaultVisible: true  },
+  { key: 'organization',    label: 'Организация',         defaultWidth: 8,  defaultVisible: true  },
+  { key: 'creator',         label: 'Инициатор',           defaultWidth: 10, defaultVisible: true,  defaultPairedWith: 'direction' },
+  { key: 'direction',       label: 'Направление',         defaultWidth: 10, defaultVisible: true  },
+  { key: 'counterparty',    label: 'Контрагент',          defaultWidth: 10, defaultVisible: true  },
+  { key: 'note',            label: 'Описание',            defaultWidth: 30, defaultVisible: true,  defaultPairedWith: 'description' },
+  { key: 'description',     label: 'Назначение платежа',  defaultWidth: 30, defaultVisible: true  },
+  { key: 'amount',          label: 'Сумма',               defaultWidth: 9,  defaultVisible: true,  required: true },
+  { key: 'approval_status', label: 'Согласование',        defaultWidth: 12, defaultVisible: true,  defaultPairedWith: 'contract_status' },
+  { key: 'contract_status', label: 'Договор',             defaultWidth: 12, defaultVisible: true  },
+  { key: 'budget_item',     label: 'Статья ДДС',          defaultWidth: 12, defaultVisible: true,  defaultPairedWith: 'is_budgeted' },
+  { key: 'is_budgeted',     label: 'Бюджет',              defaultWidth: 12, defaultVisible: true  },
+  { key: 'payment_status',  label: 'Оплата',              defaultWidth: 7,  defaultVisible: true  },
+  { key: 'special_icon',    label: '⚡',                  defaultWidth: 5,  defaultVisible: true,  required: true },
+  { key: 'actions',         label: 'Действия',            defaultWidth: 19, defaultVisible: true,  required: true },
 ];
+const REGISTRY_COLS_PRESET_VERSION = 'registry-cols-20260422-v2';
 
 function getDefaultColSettings(): ColSetting[] {
   return COLUMN_DEFS.map((d, i) => ({
-    key: d.key, visible: d.defaultVisible, order: i, width: Math.max(1, Math.round(d.defaultWidth / 10)),
+    key: d.key,
+    visible: d.defaultVisible,
+    order: i,
+    width: normalizeColSettingWidth(d.defaultWidth),
+    pairedWith: d.defaultPairedWith,
   }));
 }
 
@@ -66,7 +73,15 @@ function normalizeColSettingWidth(width: number): number {
 
 function loadColSettings(userId?: string): ColSetting[] {
   try {
-    const raw = localStorage.getItem(`ui_cols_${userId ?? 'default'}`);
+    const storageKey = `ui_cols_${userId ?? 'default'}`;
+    const versionKey = `${storageKey}_preset_version`;
+    const raw = localStorage.getItem(storageKey);
+    if (localStorage.getItem(versionKey) !== REGISTRY_COLS_PRESET_VERSION) {
+      const defaults = getDefaultColSettings();
+      localStorage.setItem(storageKey, JSON.stringify(defaults));
+      localStorage.setItem(versionKey, REGISTRY_COLS_PRESET_VERSION);
+      return defaults;
+    }
     if (!raw) return getDefaultColSettings();
     const saved: ColSetting[] = JSON.parse(raw).map((s: ColSetting) => ({
       ...s,
@@ -77,7 +92,23 @@ function loadColSettings(userId?: string): ColSetting[] {
     let offset = 0;
     for (const d of COLUMN_DEFS) {
       if (!existingKeys.has(d.key)) {
-        saved.push({ key: d.key, visible: d.defaultVisible, order: maxOrder + (++offset), width: Math.max(1, Math.round(d.defaultWidth / 10)) });
+        let order = maxOrder + (++offset);
+        if (d.key === 'request_number') {
+          const paymentDateOrder = saved.find(s => s.key === 'payment_date')?.order;
+          if (paymentDateOrder !== undefined) {
+            saved.forEach(s => {
+              if (s.order > paymentDateOrder) s.order += 1;
+            });
+            order = paymentDateOrder + 1;
+          }
+        }
+        saved.push({
+          key: d.key,
+          visible: d.defaultVisible,
+          order,
+          width: normalizeColSettingWidth(d.defaultWidth),
+          pairedWith: d.defaultPairedWith,
+        });
       }
     }
     return saved;
@@ -87,7 +118,37 @@ function loadColSettings(userId?: string): ColSetting[] {
 }
 
 function saveColSettings(userId: string | undefined, settings: ColSetting[]): void {
-  localStorage.setItem(`ui_cols_${userId ?? 'default'}`, JSON.stringify(settings));
+  const storageKey = `ui_cols_${userId ?? 'default'}`;
+  localStorage.setItem(storageKey, JSON.stringify(settings));
+  localStorage.setItem(`${storageKey}_preset_version`, REGISTRY_COLS_PRESET_VERSION);
+}
+
+type RegistryFilterState = {
+  organization?: string;
+  direction?: string;
+  paymentDates?: [string | null, string | null] | null;
+  counterparty?: string;
+  description?: string;
+  category?: string;
+  budgetItem?: string;
+  amountFrom?: number;
+  amountTo?: number;
+  approval?: string;
+  payment?: string;
+  marked?: 'all' | 'marked' | 'unmarked';
+};
+
+function loadRegistryFilters(userId?: string): RegistryFilterState {
+  try {
+    const raw = localStorage.getItem(`ui_registry_filters_${userId ?? 'default'}`);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveRegistryFilters(userId: string | undefined, filters: RegistryFilterState): void {
+  localStorage.setItem(`ui_registry_filters_${userId ?? 'default'}`, JSON.stringify(filters));
 }
 
 function getRelativeWidth(key: string, settings: ColSetting[], secondaryKeys: Set<string>): string {
@@ -118,12 +179,19 @@ const wrapTextCellStyle: React.CSSProperties = {
 const smallCellStyle: React.CSSProperties = { fontSize: 12 };
 const smallWrapTextCellStyle: React.CSSProperties = { ...wrapTextCellStyle, ...smallCellStyle };
 const smallTextCellStyle: React.CSSProperties = { ...textCellStyle, ...smallCellStyle };
+const smallLinkWrapTextCellStyle: React.CSSProperties = {
+  ...smallWrapTextCellStyle,
+  padding: 0,
+  height: 'auto',
+  fontWeight: 600,
+  textAlign: 'left',
+};
 const nestedCellDividerStyle: React.CSSProperties = {
   borderTop: '1px solid #f0f0f0',
   marginTop: 5,
   paddingTop: 5,
 };
-const SMALL_FONT_COLUMN_KEYS = new Set(['payment_date', 'creator', 'direction', 'counterparty', 'note', 'description', 'amount']);
+const SMALL_FONT_COLUMN_KEYS = new Set(['payment_date', 'request_number', 'creator', 'direction', 'counterparty', 'note', 'description', 'amount']);
 const STATUS_COLUMN_KEYS = new Set(['approval_status', 'contract_status', 'budget_item', 'is_budgeted', 'payment_status']);
 const statusCellStyle: React.CSSProperties = {
   minWidth: 0,
@@ -151,14 +219,29 @@ const statusTagStyle: React.CSSProperties = {
   marginInlineEnd: 0,
   fontSize: 12,
   lineHeight: 1.2,
+  maxWidth: '100%',
+  whiteSpace: 'normal',
+  overflowWrap: 'break-word',
+  wordBreak: 'normal',
+  textAlign: 'center',
 };
 const secondaryStatusStyle: React.CSSProperties = {
   ...statusTagStyle,
-  minWidth: 104,
 };
 const statusSelectStyle: React.CSSProperties = {
-  width: 128,
+  width: '100%',
+  maxWidth: 128,
   fontSize: 12,
+};
+
+const statusSelectLabelStyle: React.CSSProperties = {
+  display: 'block',
+  minWidth: 0,
+  maxWidth: '100%',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  textAlign: 'left',
 };
 
 const nativeTitleText = (value: string | null | undefined, style: React.CSSProperties = textCellStyle) => (
@@ -170,6 +253,16 @@ const nativeTitleText = (value: string | null | undefined, style: React.CSSPrope
 const statusTag = (label: React.ReactNode, color: string, secondary = false) => (
   <Tag color={color} style={secondary ? secondaryStatusStyle : statusTagStyle}>{label}</Tag>
 );
+
+const statusSelectLabel = (label: React.ReactNode) => (
+  <span style={statusSelectLabelStyle}>{label}</span>
+);
+
+function approvalStatusLabel(status: string): string {
+  if (status === 'MEMO_REQUIRED') return 'Вне бюджета, требуется обоснование';
+  if (status === 'PENDING_MEMO') return 'Вне бюджета, ожидание согласования';
+  return APPROVAL_CONFIG[status]?.label ?? status;
+}
 
 function buildColumns(settings: ColSetting[], renderers: Record<string, any>, isGrouped: boolean): any[] {
   const secondaryKeys = new Set(settings.filter(s => s.pairedWith).map(s => s.pairedWith!));
@@ -232,6 +325,7 @@ const APPROVAL_CONFIG: Record<string, { label: string; color: string }> = {
   DRAFT:         { label: 'Черновик',          color: 'default'  },
   PENDING_GATE:  { label: 'Требует исключения', color: 'purple'  },
   PENDING:       { label: 'На согласовании',   color: 'blue'     },
+  MEMO_REQUIRED: { label: 'Требует обоснования', color: 'orange' },
   PENDING_MEMO:  { label: 'Вне бюджета',       color: 'volcano'  },
   APPROVED:      { label: 'Согласовано',       color: 'green'    },
   REJECTED:      { label: 'Отклонено',         color: 'red'      },
@@ -246,11 +340,14 @@ const PAYMENT_CONFIG: Record<string, { label: string; color: string }> = {
 };
 
 const HISTORY_COLOR: Record<string, string> = {
+  APPROVED:      'green',
+  PAID:          'green',
   SUSPENDED:     'red',
   RESCHEDULED:   'green',
   REJECTED:      'red',
   CLARIFICATION: 'blue',
   POSTPONED:     'orange',
+  MEMO_REQUIRED: 'orange',
   GATE_REJECTED: 'purple',
   OFF_BUDGET:    'orange',
   EOD_UNPAID:    'gray',
@@ -264,6 +361,22 @@ const CONTRACT_CONFIG: Record<string, { label: string; color: string }> = {
   'false': { label: 'Нет',          color: 'red'     },
 };
 const MODAL_TOP_STYLE: React.CSSProperties = { top: 24 };
+const REQUEST_MODAL_WIDTH = 'min(1180px, calc(100vw - 96px))';
+const REQUEST_SMALL_MODAL_WIDTH = 'min(760px, calc(100vw - 96px))';
+const requestFormBlockStyle: React.CSSProperties = {
+  border: '1px solid #f0f0f0',
+  borderRadius: 6,
+  padding: 14,
+  height: '100%',
+  background: '#fff',
+};
+const requestFormBlockTitleStyle: React.CSSProperties = {
+  display: 'block',
+  marginBottom: 10,
+  fontSize: 14,
+  textTransform: 'uppercase',
+  letterSpacing: 0.2,
+};
 
 // ─── Вспомогательные компоненты ─────────────────────────────────────────────
 
@@ -277,6 +390,7 @@ const ReasonModal: React.FC<{
       onCancel={() => { setValue(''); onCancel(); }}
       onOk={() => { onOk(value); setValue(''); }}
       okText="Подтвердить" cancelText="Отменить"
+      width={REQUEST_SMALL_MODAL_WIDTH}
       style={MODAL_TOP_STYLE}
       destroyOnHidden
     >
@@ -293,16 +407,18 @@ const PaymentRegistry: React.FC = () => {
   const user = useAuthStore(s => s.user);
   const permissions = useAuthStore(s => s.permissions);
 
-  const canViewAll      = permissions.includes('req_view_all')     || !!user?.is_superadmin;
-  const canCreate       = permissions.includes('req_create')       || !!user?.is_superadmin;
-  const canApprove      = permissions.includes('req_approve')      || !!user?.is_superadmin;
-  const canPay          = permissions.includes('req_pay')          || !!user?.is_superadmin;
-  const canContract     = permissions.includes('req_set_contract') || !!user?.is_superadmin;
-  const canGateApprove  = permissions.includes('gate_approve')     || !!user?.is_superadmin;
-  const canMemoApprove  = permissions.includes('memo_approve')     || !!user?.is_superadmin;
-  const canEditAll      = permissions.includes('req_edit_all')     || !!user?.is_superadmin;
-  const canExportExcel  = permissions.includes('req_export_excel') || !!user?.is_superadmin;
-  const canMarkDeletion = canEditAll || permissions.includes('req_create');
+  const isSuper = !!user?.is_superadmin;
+  const hasUiPerm = (permission: string) => isSuper || permissions.includes(permission);
+  const canViewAll      = hasUiPerm('req_view_all');
+  const canCreate       = hasUiPerm('req_create');
+  const canApprove      = hasUiPerm('req_approve');
+  const canPay          = hasUiPerm('req_pay');
+  const canContract     = hasUiPerm('req_set_contract');
+  const canGateApprove  = hasUiPerm('gate_approve');
+  const canMemoApprove  = hasUiPerm('memo_approve');
+  const canEditAll      = hasUiPerm('req_edit_all');
+  const canExportExcel  = hasUiPerm('req_export_excel');
+  const canMarkDeletion = canEditAll || hasUiPerm('req_create');
 
   // ─── Данные ─────────────────────────────────────────────────────────────
   const [requests, setRequests]         = useState<any[]>([]);
@@ -310,18 +426,23 @@ const PaymentRegistry: React.FC = () => {
   const [directions, setDirections]     = useState<any[]>([]);
   const [budgetItems, setBudgetItems]   = useState<any[]>([]);
   const [loading, setLoading]           = useState(false);
+  const initialFilters = useMemo(() => loadRegistryFilters(user?.id), [user?.id]);
 
   // ─── Фильтры (сервер) ────────────────────────────────────────────────────
-  const [filterOrg, setFilterOrg] = useState<string | undefined>();
-  const [filterDir, setFilterDir] = useState<string | undefined>();
+  const [filterOrg, setFilterOrg] = useState<string | undefined>(() => initialFilters.organization);
+  const [filterDir, setFilterDir] = useState<string | undefined>(() => initialFilters.direction);
 
   // ─── Фильтры (клиент) ────────────────────────────────────────────────────
-  const [filterPaymentDates, setFilterPaymentDates] = useState<any>(() => currentMonthRange());
-  const [filterCounterparty, setFilterCounterparty] = useState('');
-  const [filterDescription, setFilterDescription]   = useState('');
-  const [filterBudgetItem, setFilterBudgetItem]     = useState<string | undefined>();
-  const [filterAmountFrom, setFilterAmountFrom]     = useState<number | undefined>();
-  const [filterAmountTo, setFilterAmountTo]         = useState<number | undefined>();
+  const [filterPaymentDates, setFilterPaymentDates] = useState<any>(() => {
+    const saved = initialFilters.paymentDates;
+    if (saved?.[0] || saved?.[1]) return [saved[0] ? dayjs(saved[0]) : null, saved[1] ? dayjs(saved[1]) : null];
+    return currentMonthRange();
+  });
+  const [filterCounterparty, setFilterCounterparty] = useState(() => initialFilters.counterparty ?? '');
+  const [filterDescription, setFilterDescription]   = useState(() => initialFilters.description ?? '');
+  const [filterBudgetItem, setFilterBudgetItem]     = useState<string | undefined>(() => initialFilters.budgetItem);
+  const [filterAmountFrom, setFilterAmountFrom]     = useState<number | undefined>(() => initialFilters.amountFrom);
+  const [filterAmountTo, setFilterAmountTo]         = useState<number | undefined>(() => initialFilters.amountTo);
   const [isGrouped, setIsGrouped]                   = useState<boolean>(() => {
     return localStorage.getItem('ui_registry_grouped') === 'true';
   });
@@ -335,10 +456,10 @@ const PaymentRegistry: React.FC = () => {
     const saved = localStorage.getItem('ui_registry_expand_level');
     return (saved === 'org' || saved === 'dircat' || saved === 'cat' || saved === 'req') ? saved as any : 'dircat';
   });
-  const [filterCategory, setFilterCategory]         = useState<string | undefined>();
-  const [filterApproval, setFilterApproval]         = useState<string | undefined>();
-  const [filterPayment, setFilterPayment]           = useState<string | undefined>();
-  const [filterMarked, setFilterMarked]             = useState<'all' | 'marked' | 'unmarked'>('all');
+  const [filterCategory, setFilterCategory]         = useState<string | undefined>(() => initialFilters.category);
+  const [filterApproval, setFilterApproval]         = useState<string | undefined>(() => initialFilters.approval);
+  const [filterPayment, setFilterPayment]           = useState<string | undefined>(() => initialFilters.payment);
+  const [filterMarked, setFilterMarked]             = useState<'all' | 'marked' | 'unmarked'>(() => initialFilters.marked ?? 'all');
   const [colSettings, setColSettings]               = useState<ColSetting[]>(() => loadColSettings(user?.id));
   const [colDrawerOpen, setColDrawerOpen]           = useState(false);
   const [activeMonthKey, setActiveMonthKey]         = useState<string>();
@@ -355,6 +476,32 @@ const PaymentRegistry: React.FC = () => {
   };
 
   // ─── Модалка создания/редактирования ────────────────────────────────────
+  useEffect(() => {
+    saveRegistryFilters(user?.id, {
+      organization: filterOrg,
+      direction: filterDir,
+      paymentDates: filterPaymentDates
+        ? [
+            filterPaymentDates[0]?.format?.('YYYY-MM-DD') ?? null,
+            filterPaymentDates[1]?.format?.('YYYY-MM-DD') ?? null,
+          ]
+        : null,
+      counterparty: filterCounterparty,
+      description: filterDescription,
+      category: filterCategory,
+      budgetItem: filterBudgetItem,
+      amountFrom: filterAmountFrom,
+      amountTo: filterAmountTo,
+      approval: filterApproval,
+      payment: filterPayment,
+      marked: filterMarked,
+    });
+  }, [
+    user?.id, filterOrg, filterDir, filterPaymentDates, filterCounterparty,
+    filterDescription, filterCategory, filterBudgetItem, filterAmountFrom,
+    filterAmountTo, filterApproval, filterPayment, filterMarked,
+  ]);
+
   const [isFormOpen, setIsFormOpen]         = useState(false);
   const [editingRequest, setEditingRequest] = useState<any>(null);
   const [isCopying, setIsCopying]           = useState(false);
@@ -394,6 +541,10 @@ const PaymentRegistry: React.FC = () => {
   // ─── Модалка просмотра заявки ─────────────────────────────────────────────
   const [viewingRequest, setViewingRequest] = useState<any>(null);
   const [requestHistory, setRequestHistory] = useState<any[]>([]);
+  const mergeRequest = useCallback((request: any) => {
+    setRequests(prev => prev.map(r => r.id === request.id ? { ...r, ...request } : r));
+    setViewingRequest((current: any) => current?.id === request.id ? { ...current, ...request } : current);
+  }, []);
 
   useEffect(() => {
     if (!viewingRequest) { setRequestHistory([]); return; }
@@ -573,7 +724,7 @@ const PaymentRegistry: React.FC = () => {
           if (s.key === 'creator') return r.creator?.full_name;
           if (s.key === 'budget_item') return r.budget_item?.name;
           if (s.key === 'amount') return formatMoney(r.amount);
-          if (s.key === 'approval_status') return APPROVAL_CONFIG[r.approval_status]?.label ?? r.approval_status;
+          if (s.key === 'approval_status') return approvalStatusLabel(r.approval_status);
           if (s.key === 'payment_status') return PAYMENT_CONFIG[r.payment_status]?.label ?? r.payment_status;
           if (s.key === 'contract_status') return CONTRACT_CONFIG[CONTRACT_KEY(r.contract_status)]?.label;
           if (s.key === 'is_budgeted') return CONTRACT_CONFIG[CONTRACT_KEY(r.is_budgeted)]?.label;
@@ -784,7 +935,8 @@ const PaymentRegistry: React.FC = () => {
   const handleSetBudget = async (id: string, value: boolean | null) => {
     setRequests(prev => prev.map(r => r.id === id ? { ...r, is_budgeted: value } : r));
     try {
-      await apiClient.patch(`/requests/${id}/budget`, { is_budgeted: value });
+      const response = await apiClient.patch(`/requests/${id}/budget`, { is_budgeted: value });
+      mergeRequest(response.data);
     } catch (e: any) {
       messageApi.error(e.response?.data?.detail || 'Ошибка');
       fetchRequests();
@@ -825,7 +977,7 @@ const PaymentRegistry: React.FC = () => {
   };
 
   // ─── Suspend / Unsuspend ─────────────────────────────────────────────────
-  const canSuspend = permissions.includes('req_suspend') || !!user?.is_superadmin;
+  const canSuspend = hasUiPerm('req_suspend');
   const [unsuspendModal, setUnsuspendModal] = useState<{ open: boolean; requestId: string }>({ open: false, requestId: '' });
   const [unsuspendDate, setUnsuspendDate] = useState<any>(null);
 
@@ -913,13 +1065,14 @@ const PaymentRegistry: React.FC = () => {
   // ─── Действия со статусами ────────────────────────────────────────────────
   const handleAction = async (action: string, requestId: string, reason = '') => {
     try {
+      let response;
       if (action === 'pay') {
-        await apiClient.post(`/requests/${requestId}/pay`);
+        response = await apiClient.post(`/requests/${requestId}/pay`);
       } else {
-        await apiClient.post(`/requests/${requestId}/${action}`, { reason });
+        response = await apiClient.post(`/requests/${requestId}/${action}`, { reason });
       }
+      mergeRequest(response.data);
       messageApi.success('Статус обновлён');
-      fetchRequests();
     } catch (e: any) {
       messageApi.error(e.response?.data?.detail || 'Ошибка');
     }
@@ -965,7 +1118,10 @@ const PaymentRegistry: React.FC = () => {
         danger={action.danger}
         icon={action.icon}
         style={action.color ? { background: action.color, borderColor: action.color } : undefined}
-        onClick={action.confirmTitle ? undefined : action.run}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (!action.confirmTitle) action.run();
+        }}
       >
         {action.label}
       </Button>
@@ -993,27 +1149,27 @@ const PaymentRegistry: React.FC = () => {
         icon: action.icon,
         danger: action.danger,
       })),
-      onClick: ({ key }) => {
+      onClick: ({ key, domEvent }) => {
+        domEvent.stopPropagation();
         const action = actions.find(item => item.key === key);
         if (action) runWorkflowAction(action);
       },
     };
     return (
       <Dropdown menu={menu} trigger={['click']}>
+        <span
+          data-row-action="true"
+          onClick={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
         <Button type="text" size="small" icon={<MoreOutlined />} aria-label="Дополнительные действия" />
+        </span>
       </Dropdown>
     );
   };
 
   // ─── Колонки таблицы ─────────────────────────────────────────────────────
   const isGroupRow = (r: any) => r._type === 'org' || r._type === 'dircat' || r._type === 'category';
-  const shouldIgnoreRowClick = (event: React.MouseEvent<HTMLElement>) => {
-    const target = event.target as HTMLElement | null;
-    return !!target?.closest(
-      'button,a,input,textarea,select,[role="button"],.ant-btn,.ant-select,.ant-picker,.ant-checkbox,.ant-radio,.ant-switch,.ant-upload,.ant-table-row-expand-icon'
-    );
-  };
-
   const COLUMN_RENDERERS: Record<string, any> = {
     payment_date: {
       dataIndex: 'payment_date',
@@ -1043,11 +1199,27 @@ const PaymentRegistry: React.FC = () => {
           );
         }
         return v
-          ? <Button type="link" style={{ padding: 0, height: 'auto', fontWeight: 600, ...smallCellStyle }}
-              onClick={() => setViewingRequest(r)}>
-              {new Date(v + 'T00:00:00').toLocaleDateString('ru-RU')}
-            </Button>
+          ? <span style={smallTextCellStyle}>{new Date(v + 'T00:00:00').toLocaleDateString('ru-RU')}</span>
           : <Text type="secondary">—</Text>;
+      },
+    },
+    request_number: {
+      dataIndex: 'request_number',
+      sorter: (a: any, b: any) => (a.request_number ?? '').localeCompare(b.request_number ?? ''),
+      render: (v: string, r: any) => {
+        if (isGroupRow(r)) return null;
+        return (
+          <Button
+            type="link"
+            style={smallLinkWrapTextCellStyle}
+            onClick={(event) => {
+              event.stopPropagation();
+              setViewingRequest(r);
+            }}
+          >
+            {v || r.id?.slice(0, 8).toUpperCase() || '—'}
+          </Button>
+        );
       },
     },
     organization: {
@@ -1063,7 +1235,7 @@ const PaymentRegistry: React.FC = () => {
       sorter: (a: any, b: any) => (a.direction?.name ?? '').localeCompare(b.direction?.name ?? ''),
       render: (_: any, r: any) => {
         if (isGroupRow(r)) return null;
-        return nativeTitleText(r.direction?.name, smallTextCellStyle);
+        return nativeTitleText(r.direction?.name, smallWrapTextCellStyle);
       },
     },
     counterparty: {
@@ -1097,7 +1269,7 @@ const PaymentRegistry: React.FC = () => {
       render: (_: any, r: any) => {
         if (isGroupRow(r)) return null;
         return r.creator
-          ? nativeTitleText(r.creator.full_name, smallTextCellStyle)
+          ? nativeTitleText(r.creator.full_name, smallWrapTextCellStyle)
           : <Text type="secondary">—</Text>;
       },
     },
@@ -1141,6 +1313,22 @@ const PaymentRegistry: React.FC = () => {
       render: (v: string, r: any) => {
         if (isGroupRow(r)) return null;
         const cfg = APPROVAL_CONFIG[v] ?? { label: v, color: 'default' };
+        if (v === 'MEMO_REQUIRED') {
+          return (
+            <div style={statusCellStyle}>
+              {statusTag('Вне бюджета', cfg.color)}
+              <Tag color="orange" style={secondaryStatusStyle}>Требуется обоснование</Tag>
+            </div>
+          );
+        }
+        if (v === 'PENDING_MEMO') {
+          return (
+            <div style={statusCellStyle}>
+              {statusTag(cfg.label, cfg.color)}
+              <Tag color="geekblue" style={secondaryStatusStyle}>Ожидание согласования</Tag>
+            </div>
+          );
+        }
         return statusTag(cfg.label, cfg.color);
       },
     },
@@ -1160,7 +1348,7 @@ const PaymentRegistry: React.FC = () => {
               style={statusSelectStyle}
               options={Object.entries(CONTRACT_CONFIG).map(([k, c]) => ({
                 value: k,
-                label: statusTag(c.label, c.color, true),
+                label: statusSelectLabel(c.label),
               }))}
               onChange={(newKey) => {
                 const newVal = newKey === 'null' ? null : newKey === 'true';
@@ -1188,7 +1376,7 @@ const PaymentRegistry: React.FC = () => {
               style={statusSelectStyle}
               options={Object.entries(CONTRACT_CONFIG).map(([k, c]) => ({
                 value: k,
-                label: statusTag(c.label, c.color, true),
+                label: statusSelectLabel(c.label),
               }))}
               onChange={(newKey) => {
                 const newVal = newKey === 'null' ? null : newKey === 'true';
@@ -1239,7 +1427,9 @@ const PaymentRegistry: React.FC = () => {
         const isDraft    = r.approval_status === 'DRAFT';
         const isApproved = r.approval_status === 'APPROVED';
         const isUnpaid   = r.payment_status  === 'UNPAID';
+        const isMemoRequired = r.approval_status === 'MEMO_REQUIRED';
         const canResubmit = isOwner && ['DRAFT', 'CLARIFICATION', 'POSTPONED'].includes(r.approval_status);
+        const canMoveToDraft = (isOwner && canCreate) || canEditAll;
         const requestSummary = `${r.counterparty} — ${r.amount?.toLocaleString('ru-RU')} ₽`;
 
         const primaryAction: WorkflowAction | undefined =
@@ -1255,6 +1445,9 @@ const PaymentRegistry: React.FC = () => {
           } : canApprove && r.approval_status === 'PENDING' ? {
             key: 'approve', label: 'Согласовать', icon: <CheckOutlined />,
             run: () => handleAction('approve', r.id),
+          } : canCreate && isOwner && isMemoRequired ? {
+            key: 'memo-reason', label: 'Обосновать', icon: <CheckOutlined />, color: '#fa8c16',
+            run: () => openReasonModal('memo_reason', r.id, 'Обоснование вне бюджета'),
           } : canMemoApprove && r.approval_status === 'PENDING_MEMO' ? {
             key: 'approve-memo', label: 'Утвердить вне бюджета', icon: <CheckOutlined />,
             run: () => handleApproveMemo(r.id),
@@ -1273,7 +1466,7 @@ const PaymentRegistry: React.FC = () => {
           } : canSuspend && r.approval_status === 'SUSPENDED' ? {
             key: 'unsuspend', label: 'Вернуть на согласование', icon: <ClockCircleOutlined />, color: '#fa8c16',
             run: () => setUnsuspendModal({ open: true, requestId: r.id }),
-          } : canCreate && isOwner && (r.approval_status === 'PENDING_MEMO' || r.approval_status === 'POSTPONED') ? {
+          } : canMoveToDraft && (isMemoRequired || r.approval_status === 'PENDING_MEMO' || r.approval_status === 'POSTPONED') ? {
             key: 'move-to-draft', label: 'Вернуть в черновик', icon: <ClockCircleOutlined />, color: '#fa8c16',
             run: () => setMoveDraftModal({ open: true, requestId: r.id }),
           } : undefined;
@@ -1306,6 +1499,12 @@ const PaymentRegistry: React.FC = () => {
             { key: 'clarify', label: 'На уточнение', icon: <ClockCircleOutlined />, run: () => openReasonModal('clarify', r.id, 'Комментарий для уточнения') },
             { key: 'postpone', label: 'Перенести', icon: <ClockCircleOutlined />, run: () => setPostponeModal({ open: true, requestId: r.id }) },
           );
+          if (canSuspend) {
+            secondaryActions.push({ key: 'suspend-pending', label: 'Отложить', icon: <ClockCircleOutlined />, run: () => setSuspendModal({ open: true, requestId: r.id }) });
+          }
+        }
+        if (canApprove && isApproved && isUnpaid) {
+          secondaryActions.push({ key: 'postpone-approved', label: 'Перенести', icon: <ClockCircleOutlined />, run: () => setPostponeModal({ open: true, requestId: r.id }) });
         }
         if (canGateApprove && r.approval_status === 'PENDING_GATE') {
           secondaryActions.push({
@@ -1313,21 +1512,46 @@ const PaymentRegistry: React.FC = () => {
             run: () => setGateModal({ open: true, type: 'reject', requestId: r.id, violation: r.gate_reason || '' }),
           });
         }
+        if (isMemoRequired) {
+          if (canCreate && isOwner && primaryAction?.key !== 'memo-reason') {
+            secondaryActions.push({
+              key: 'memo-reason',
+              label: 'Обосновать',
+              icon: <CheckOutlined />,
+              run: () => openReasonModal('memo_reason', r.id, 'Обоснование вне бюджета'),
+            });
+          }
+          if (canCreate && isOwner) {
+            secondaryActions.push({
+              key: 'cancel-memo',
+              label: 'Отменить',
+              icon: <CloseOutlined />,
+              danger: true,
+              run: () => openReasonModal('cancel_memo', r.id, 'Причина отмены'),
+            });
+          }
+        }
         if (canMemoApprove && r.approval_status === 'PENDING_MEMO') {
           secondaryActions.push({
             key: 'reject-memo', label: 'Отклонить вне бюджета', icon: <CloseOutlined />, danger: true,
             run: () => setRejectMemoModal({ open: true, requestId: r.id }),
           });
         }
-        if (canPay && canSuspend && isApproved && isUnpaid) {
+        if (canSuspend && isApproved && isUnpaid && primaryAction?.key !== 'suspend') {
           secondaryActions.push({ key: 'suspend', label: 'Отложить', icon: <ClockCircleOutlined />, run: () => setSuspendModal({ open: true, requestId: r.id }) });
         }
-        if (canCreate && isOwner && (r.approval_status === 'PENDING_MEMO' || r.approval_status === 'POSTPONED') && primaryAction?.key !== 'move-to-draft') {
+        if (canMoveToDraft && (isMemoRequired || r.approval_status === 'PENDING_MEMO' || r.approval_status === 'POSTPONED') && primaryAction?.key !== 'move-to-draft') {
           secondaryActions.push({ key: 'move-to-draft', label: 'Вернуть в черновик', icon: <ClockCircleOutlined />, run: () => setMoveDraftModal({ open: true, requestId: r.id }) });
         }
 
         return (
-          <Space size={4} wrap={false}>
+          <Space
+            size={4}
+            wrap={false}
+            data-row-action="true"
+            onClick={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
             {renderPrimaryAction(primaryAction)}
             {renderSecondaryActions(secondaryActions)}
           </Space>
@@ -1335,6 +1559,7 @@ const PaymentRegistry: React.FC = () => {
       },
     },
   };
+  const renderRequestActions = (r: any) => COLUMN_RENDERERS.actions.render(null, r);
   const columns = useMemo(
     () => buildColumns(colSettings, COLUMN_RENDERERS, isGrouped),
     [
@@ -1384,24 +1609,18 @@ const PaymentRegistry: React.FC = () => {
           bordered
           tableLayout="fixed"
           sticky={{ offsetHeader: 0 }}
-          pagination={isGrouped ? false : { pageSize: 20, showTotal: total => `Всего: ${total}` }}
+          pagination={false}
           rowClassName={(r) => {
             if (r._type === 'org')      return 'row-group-org';
             if (r._type === 'dircat')   return 'row-group-dircat';
             if (r._type === 'category') return 'row-group-cat';
             if (r.is_marked_for_deletion) return 'row-marked-deletion';
             if (r.approval_status === 'PENDING_GATE') return 'row-pending-gate';
+            if (r.approval_status === 'MEMO_REQUIRED') return 'row-memo-required';
             if (r.approval_status === 'PENDING_MEMO') return 'row-pending-memo';
             if (r.approval_status === 'SUSPENDED') return 'row-suspended';
             return r.special_order ? 'row-special' : '';
           }}
-          onRow={(record) => ({
-            onClick: (event) => {
-              if (isGrouped || isGroupRow(record) || shouldIgnoreRowClick(event)) return;
-              setViewingRequest(record);
-            },
-            style: isGrouped || isGroupRow(record) ? undefined : { cursor: 'pointer' },
-          })}
           expandable={isGrouped ? {
             expandedRowKeys: expandedKeys,
             onExpand: (expanded, record) => {
@@ -1618,6 +1837,10 @@ const PaymentRegistry: React.FC = () => {
         title={reasonModal.title}
         onCancel={() => setReasonModal(p => ({ ...p, open: false }))}
         onOk={(reason) => {
+          if (reasonModal.action === 'memo_reason' && !reason.trim()) {
+            messageApi.warning('Укажите обоснование вне бюджета');
+            return;
+          }
           setReasonModal(p => ({ ...p, open: false }));
           handleAction(reasonModal.action, reasonModal.requestId, reason);
         }}
@@ -1637,7 +1860,7 @@ const PaymentRegistry: React.FC = () => {
         okText="Сохранить"
         cancelText="Отменить"
         confirmLoading={formLoading}
-        width={640}
+        width={REQUEST_MODAL_WIDTH}
         style={MODAL_TOP_STYLE}
         destroyOnHidden
       >
@@ -1648,90 +1871,105 @@ const PaymentRegistry: React.FC = () => {
               {editingRequest.creator?.full_name && ` · ${editingRequest.creator.full_name}`}
             </div>
           )}
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="organization_id" label="Организация" rules={[{ required: true }]}>
-                <Select showSearch placeholder="Выберите организацию"
-                  filterOption={(i, o) => (o?.label ?? '').toString().toLowerCase().includes(i.toLowerCase())}
-                  options={organizations.map(o => ({ value: o.id, label: o.name }))}
-                />
-              </Form.Item>
+          <Row gutter={[16, 16]}>
+            <Col xs={24} lg={8}>
+              <div style={requestFormBlockStyle}>
+                <Text type="secondary" style={requestFormBlockTitleStyle}>Реквизиты</Text>
+                <Form.Item name="organization_id" label="Организация" rules={[{ required: true }]}>
+                  <Select showSearch placeholder="Выберите организацию"
+                    filterOption={(i, o) => (o?.label ?? '').toString().toLowerCase().includes(i.toLowerCase())}
+                    options={organizations.map(o => ({ value: o.id, label: o.name }))}
+                  />
+                </Form.Item>
+                <Form.Item name="direction_id" label="Направление" rules={[{ required: true }]}>
+                  <Select showSearch placeholder="Выберите направление"
+                    filterOption={(i, o) => (o?.label ?? '').toString().toLowerCase().includes(i.toLowerCase())}
+                    options={directions.map(d => ({ value: d.id, label: d.name }))}
+                  />
+                </Form.Item>
+                <Form.Item name="counterparty" label="Контрагент" rules={[{ required: true }]}>
+                  <Input />
+                </Form.Item>
+                <Form.Item name="budget_item_id" label="Статья ДДС" rules={[{ required: true }]}>
+                  <Select showSearch placeholder="Выберите статью"
+                    filterOption={(i, o) => (o?.label ?? '').toString().toLowerCase().includes(i.toLowerCase())}
+                    options={budgetItems.map(b => ({ value: b.id, label: b.name }))}
+                  />
+                </Form.Item>
+              </div>
             </Col>
-            <Col span={12}>
-              <Form.Item name="direction_id" label="Направление" rules={[{ required: true }]}>
-                <Select showSearch placeholder="Выберите направление"
-                  filterOption={(i, o) => (o?.label ?? '').toString().toLowerCase().includes(i.toLowerCase())}
-                  options={directions.map(d => ({ value: d.id, label: d.name }))}
-                />
-              </Form.Item>
+
+            <Col xs={24} lg={8}>
+              <div style={requestFormBlockStyle}>
+                <Text type="secondary" style={requestFormBlockTitleStyle}>Платеж</Text>
+                <Row gutter={12}>
+                  <Col span={12}>
+                    <Form.Item name="amount" label="Сумма, ₽" rules={[{ required: true }]}>
+                      <InputNumber style={{ width: '100%' }} min={0.01} precision={2}
+                        formatter={v => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ' ')} />
+                    </Form.Item>
+                  </Col>
+                  <Col span={12}>
+                    <Form.Item name="payment_date" label="Дата оплаты" rules={[{ required: true, message: 'Укажите дату' }]}>
+                      <DatePicker style={{ width: '100%' }} format="DD.MM.YYYY" locale={DATE_PICKER_LOCALE} />
+                    </Form.Item>
+                  </Col>
+                </Row>
+                <Form.Item name="description" label="Назначение платежа (для банка)" rules={[{ required: true }]}>
+                  <Input.TextArea rows={4} />
+                </Form.Item>
+                <Form.Item name="note" label="Описание (смысловое)">
+                  <Input.TextArea rows={4} />
+                </Form.Item>
+              </div>
+            </Col>
+
+            <Col xs={24} lg={8}>
+              <div style={requestFormBlockStyle}>
+                <Text type="secondary" style={requestFormBlockTitleStyle}>Регламент и служебное</Text>
+                {gatePreviewLoading && (
+                  <Alert
+                    showIcon
+                    type="info"
+                    message="Проверяем регламент оплаты..."
+                    style={{ marginBottom: 12 }}
+                  />
+                )}
+                {!gatePreviewLoading && gatePreview && (
+                  <Alert
+                    showIcon
+                    type={gatePreview.allowed ? 'success' : 'warning'}
+                    message={gatePreview.allowed ? 'Заявка разрешена' : 'Заявка требует дополнительного согласования'}
+                    description={gatePreview.allowed
+                      ? 'По выбранной организации, статье ДДС и дате оплаты ограничений нет.'
+                      : gatePreview.reason}
+                    style={{ marginBottom: 12 }}
+                  />
+                )}
+                {!gatePreviewLoading && !gatePreview && (
+                  <Alert
+                    showIcon
+                    type="info"
+                    message="Проверка регламента"
+                    description="Выберите организацию, статью ДДС и дату оплаты."
+                    style={{ marginBottom: 12 }}
+                  />
+                )}
+                <Form.Item name="feo_note" label="Примечание">
+                  <Input.TextArea rows={4} placeholder="Необязательно" />
+                </Form.Item>
+                <Form.Item label="Файл (скан счёта / акта)">
+                  <Upload maxCount={1} beforeUpload={() => false}
+                    fileList={fileList}
+                    onChange={({ fileList: fl }) => setFileList(fl)}
+                    accept=".pdf,.jpg,.jpeg,.png"
+                  >
+                    <Button icon={<UploadOutlined />}>Выбрать файл</Button>
+                  </Upload>
+                </Form.Item>
+              </div>
             </Col>
           </Row>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="counterparty" label="Контрагент" rules={[{ required: true }]}>
-                <Input />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="budget_item_id" label="Статья ДДС" rules={[{ required: true }]}>
-                <Select showSearch placeholder="Выберите статью"
-                  filterOption={(i, o) => (o?.label ?? '').toString().toLowerCase().includes(i.toLowerCase())}
-                  options={budgetItems.map(b => ({ value: b.id, label: b.name }))}
-                />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Form.Item name="description" label="Назначение платежа (для банка)" rules={[{ required: true }]}>
-            <Input.TextArea rows={2} />
-          </Form.Item>
-          <Form.Item name="note" label="Описание (смысловое)">
-            <Input.TextArea rows={2} />
-          </Form.Item>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item name="amount" label="Сумма, ₽" rules={[{ required: true }]}>
-                <InputNumber style={{ width: '100%' }} min={0.01} precision={2}
-                  formatter={v => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ' ')} />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item name="payment_date" label="Дата оплаты" rules={[{ required: true, message: 'Укажите дату' }]}>
-                <DatePicker style={{ width: '100%' }} format="DD.MM.YYYY" locale={DATE_PICKER_LOCALE} />
-              </Form.Item>
-            </Col>
-          </Row>
-          {gatePreviewLoading && (
-            <Alert
-              showIcon
-              type="info"
-              message="Проверяем регламент оплаты..."
-              style={{ marginBottom: 12 }}
-            />
-          )}
-          {!gatePreviewLoading && gatePreview && (
-            <Alert
-              showIcon
-              type={gatePreview.allowed ? 'success' : 'warning'}
-              message={gatePreview.allowed ? 'Заявка разрешена' : 'Заявка требует дополнительного согласования'}
-              description={gatePreview.allowed
-                ? 'По выбранной организации, статье ДДС и дате оплаты ограничений нет.'
-                : gatePreview.reason}
-              style={{ marginBottom: 12 }}
-            />
-          )}
-          <Divider style={{ margin: '12px 0' }} />
-          <Form.Item name="feo_note" label="Примечание">
-            <Input.TextArea rows={2} placeholder="Необязательно" />
-          </Form.Item>
-          <Form.Item label="Файл (скан счёта / акта)">
-            <Upload maxCount={1} beforeUpload={() => false}
-              fileList={fileList}
-              onChange={({ fileList: fl }) => setFileList(fl)}
-              accept=".pdf,.jpg,.jpeg,.png"
-            >
-              <Button icon={<UploadOutlined />}>Выбрать файл</Button>
-            </Upload>
-          </Form.Item>
         </Form>
       </Modal>
 
@@ -1741,7 +1979,7 @@ const PaymentRegistry: React.FC = () => {
         title={filePreview?.name}
         footer={null}
         onCancel={() => { URL.revokeObjectURL(filePreview?.url ?? ''); setFilePreview(null); }}
-        width={800}
+        width={REQUEST_MODAL_WIDTH}
         style={MODAL_TOP_STYLE}
         destroyOnHidden
       >
@@ -1769,6 +2007,7 @@ const PaymentRegistry: React.FC = () => {
         onCancel={() => { setUnsuspendModal({ open: false, requestId: '' }); setUnsuspendDate(null); }}
         onOk={handleUnsuspend}
         okText="Вернуть" cancelText="Отменить"
+        width={REQUEST_SMALL_MODAL_WIDTH}
         style={MODAL_TOP_STYLE}
         destroyOnHidden
       >
@@ -1801,6 +2040,7 @@ const PaymentRegistry: React.FC = () => {
         onCancel={() => { setMoveDraftModal({ open: false, requestId: '' }); setMoveDraftDate(null); }}
         onOk={handleMoveToDraft}
         okText="Перенести" cancelText="Отменить"
+        width={REQUEST_SMALL_MODAL_WIDTH}
         style={MODAL_TOP_STYLE}
         destroyOnHidden
       >
@@ -1823,6 +2063,7 @@ const PaymentRegistry: React.FC = () => {
         onCancel={() => { setPostponeModal({ open: false, requestId: '' }); setPostponeDate(null); setPostponeReason(''); }}
         onOk={handlePostpone}
         okText="Перенести" cancelText="Отменить"
+        width={REQUEST_SMALL_MODAL_WIDTH}
         style={MODAL_TOP_STYLE}
         destroyOnHidden
       >
@@ -1866,92 +2107,23 @@ const PaymentRegistry: React.FC = () => {
         onCancel={() => setViewingRequest(null)}
         footer={<Button onClick={() => setViewingRequest(null)}>Закрыть</Button>}
         title={`Заявка № ${viewingRequest?.request_number ?? viewingRequest?.id?.slice(0, 8).toUpperCase() ?? ''}`}
-        width={680}
+        width={REQUEST_MODAL_WIDTH}
         style={MODAL_TOP_STYLE}
         destroyOnHidden
       >
-        {viewingRequest && (() => {
-          const r = viewingRequest;
-          const approvalCfg = APPROVAL_CONFIG[r.approval_status] ?? { label: r.approval_status, color: 'default' };
-          const paymentCfg  = PAYMENT_CONFIG[r.payment_status]   ?? { label: r.payment_status,  color: 'default' };
-          const contractCfg = CONTRACT_CONFIG[CONTRACT_KEY(r.contract_status)];
-          const budgetCfg   = CONTRACT_CONFIG[CONTRACT_KEY(r.is_budgeted)];
-
-          const row = (label: string, value: React.ReactNode) => (
-            <Row style={{ marginBottom: 8 }}>
-              <Col span={9}><Text type="secondary">{label}</Text></Col>
-              <Col span={15}>{value}</Col>
-            </Row>
-          );
-
-          return (
-            <div style={{ paddingTop: 8 }}>
-              {/* Блок: Основные реквизиты */}
-              <Divider style={{ marginTop: 0 }}>Реквизиты</Divider>
-              {row('Организация',     <Text strong>{r.organization?.name ?? '—'}</Text>)}
-              {row('ЦФО',            <Text>{r.direction?.name ?? '—'}</Text>)}
-              {row('Контрагент',     <Text>{r.counterparty}</Text>)}
-              {row('Статья ДДС',     r.budget_item
-                ? <span><Tag color={CATEGORY_CONFIG[r.budget_item.category]?.color ?? 'default'} style={{ marginRight: 4 }}>
-                    {CATEGORY_CONFIG[r.budget_item.category]?.label ?? r.budget_item.category}
-                  </Tag>{r.budget_item.name}</span>
-                : <Text type="secondary">—</Text>)}
-              {row('Сумма',          <Text strong style={{ fontSize: 15 }}>{r.amount?.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽</Text>)}
-              {row('Дата оплаты',    r.payment_date
-                ? <Text>{new Date(r.payment_date + 'T00:00:00').toLocaleDateString('ru-RU')}</Text>
-                : <Text type="secondary">—</Text>)}
-              {row('Описание',          r.note ? <Text>{r.note}</Text> : <Text type="secondary">—</Text>)}
-              {row('Назначение платежа', <Text>{r.description}</Text>)}
-              {r.priority && row('Приоритет', <Text>{r.priority}</Text>)}
-
-              {/* Блок: Статус */}
-              <Divider>Статус</Divider>
-              {row('Согласование',   <Tag color={approvalCfg.color}>{approvalCfg.label}</Tag>)}
-              {row('Оплата',         <Tag color={paymentCfg.color}>{paymentCfg.label}</Tag>)}
-              {row('В бюджете',      <Tag color={budgetCfg.color}>{budgetCfg.label}</Tag>)}
-              {row('Договор',        <Tag color={contractCfg.color}>{contractCfg.label}</Tag>)}
-              {r.special_order && row('Спец. распоряжение', <Tag icon={<ThunderboltOutlined />} color="orange">Да</Tag>)}
-
-              {/* Блок: Причины и комментарии — только если есть данные */}
-              {(r.rejection_reason || r.gate_reason || r.feo_note) && (<>
-                <Divider>Комментарии</Divider>
-                {r.rejection_reason && row('Причина отклонения', <Text type="danger">{r.rejection_reason}</Text>)}
-                {r.gate_reason      && row('Исключение из регламента',  <Text>{r.gate_reason}</Text>)}
-                {r.feo_note         && row('Примечание ФЭО',     <Text>{r.feo_note}</Text>)}
-                {r.gate_approver    && row('Разрешил исключение',      <Text>{r.gate_approver.full_name}</Text>)}
-              </>)}
-
-              {/* Блок: История событий */}
-              {requestHistory.length > 0 && (<>
-                <Divider>История</Divider>
-                <Timeline
-                  items={requestHistory.map(h => ({
-                    color: HISTORY_COLOR[h.type] ?? 'gray',
-                    children: (
-                      <div>
-                        <Text type="secondary" style={{ fontSize: 12 }}>
-                          {new Date(h.created_at).toLocaleString('ru-RU')}
-                        </Text>
-                        <div><Text>{h.text}</Text></div>
-                      </div>
-                    ),
-                  }))}
-                />
-              </>)}
-
-              {/* Блок: Служебная информация */}
-              <Divider>Служебная информация</Divider>
-              {row('Создал',         <Text>{r.creator?.full_name ?? '—'}</Text>)}
-              {row('Дата создания',  <Text>{r.created_at ? new Date(r.created_at).toLocaleString('ru-RU') : '—'}</Text>)}
-              {r.file_path && row('Файл',
-                <Button type="link" icon={<PaperClipOutlined />} style={{ padding: 0 }}
-                  onClick={() => openFile(r.id, r.file_path)}>
-                  {r.file_path}
-                </Button>
-              )}
-            </div>
-          );
-        })()}
+        {viewingRequest && (
+          <RequestDetailsCard
+            request={viewingRequest}
+            history={requestHistory}
+            approvalConfig={APPROVAL_CONFIG}
+            paymentConfig={PAYMENT_CONFIG}
+            contractConfig={CONTRACT_CONFIG}
+            categoryConfig={CATEGORY_CONFIG}
+            historyColor={HISTORY_COLOR}
+            onOpenFile={openFile}
+            actions={renderRequestActions(viewingRequest)}
+          />
+        )}
       </Modal>
 
       {/* Настройка колонок */}
@@ -1970,6 +2142,7 @@ const PaymentRegistry: React.FC = () => {
         .row-group-dircat > td { background-color: #f9f0ff !important; }
         .row-group-cat > td { background-color: #f6ffed !important; }
         .row-pending-gate td { background-color: #f9f0ff !important; }
+        .row-memo-required td { background-color: #fff7e6 !important; }
         .row-pending-memo td { background-color: #fff2e8 !important; }
         .row-suspended td { background-color: #fff1f0 !important; }
         .row-marked-deletion td { background-color: #fff0f0 !important; opacity: 0.65; text-decoration: line-through; }
@@ -1982,12 +2155,32 @@ const PaymentRegistry: React.FC = () => {
           font-size: 12px !important;
           display: flex;
           align-items: center;
+          max-width: 100%;
+          overflow: hidden;
+        }
+        .registry-status-select .ant-select-selection-wrap {
+          min-width: 0;
         }
         .registry-status-select .ant-select-selection-item {
-          display: flex;
-          align-items: center;
-          justify-content: center;
+          display: block !important;
+          flex: 1 1 auto;
+          width: 100%;
           font-size: 12px !important;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          text-align: left;
+          padding-inline-end: 14px;
+        }
+        .registry-status-select .ant-select-selection-item .ant-tag {
+          max-width: 100%;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          display: block;
+          vertical-align: middle;
+          text-align: left;
         }
       `}</style>
     </div>

@@ -12,6 +12,7 @@ class ApprovalStatus(str, enum.Enum):
     DRAFT = "DRAFT"                 # Черновик
     PENDING_GATE = "PENDING_GATE"   # Ожидает разрешения шлюза (ФЭО)
     PENDING = "PENDING"             # На согласовании
+    MEMO_REQUIRED = "MEMO_REQUIRED" # Вне бюджета, требуется обоснование инициатора
     PENDING_MEMO = "PENDING_MEMO"   # Вне бюджета, ожидает утверждения Директора
     CLARIFICATION = "CLARIFICATION" # Уточнение
     APPROVED = "APPROVED"           # Утверждено

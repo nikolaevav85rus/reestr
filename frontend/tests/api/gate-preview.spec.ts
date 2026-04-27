@@ -169,7 +169,11 @@ test.describe('API regression: gate preview and workflow', () => {
     const memoApproveMarker = marker('REG-P0-MEMO-APPROVE');
     const memoApproveDraft = await createDraft(api, initiator, makeRequestPayload(allowedScenario, memoApproveMarker, 5003));
     await postJson(api, initiator, `/requests/${memoApproveDraft.id}/submit`);
-    const pendingMemo = await patchJson<any>(api, feo, `/requests/${memoApproveDraft.id}/budget`, { is_budgeted: false });
+    const memoRequired = await patchJson<any>(api, feo, `/requests/${memoApproveDraft.id}/budget`, { is_budgeted: false });
+    expect(memoRequired.approval_status).toBe('MEMO_REQUIRED');
+    const pendingMemo = await postJson<any>(api, initiator, `/requests/${memoApproveDraft.id}/memo_reason`, {
+      reason: `${memoApproveMarker} off-budget reason`,
+    });
     expect(pendingMemo.approval_status).toBe('PENDING_MEMO');
     const memoApproved = await postJson<any>(api, director, `/requests/${memoApproveDraft.id}/approve_memo`);
     expect(memoApproved.approval_status).toBe('PENDING');
@@ -177,7 +181,12 @@ test.describe('API regression: gate preview and workflow', () => {
     const memoRejectMarker = marker('REG-P0-MEMO-REJECT');
     const memoRejectDraft = await createDraft(api, initiator, makeRequestPayload(allowedScenario, memoRejectMarker, 5004));
     await postJson(api, initiator, `/requests/${memoRejectDraft.id}/submit`);
-    await patchJson(api, feo, `/requests/${memoRejectDraft.id}/budget`, { is_budgeted: false });
+    const memoRejectRequired = await patchJson<any>(api, feo, `/requests/${memoRejectDraft.id}/budget`, { is_budgeted: false });
+    expect(memoRejectRequired.approval_status).toBe('MEMO_REQUIRED');
+    const memoRejectPending = await postJson<any>(api, initiator, `/requests/${memoRejectDraft.id}/memo_reason`, {
+      reason: `${memoRejectMarker} off-budget reason`,
+    });
+    expect(memoRejectPending.approval_status).toBe('PENDING_MEMO');
     const memoRejected = await postJson<any>(api, director, `/requests/${memoRejectDraft.id}/reject_memo`, {
       reason: `${memoRejectMarker} rejected`,
     });

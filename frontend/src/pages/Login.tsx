@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Form, Input, Button, Card, Typography, Layout, App } from 'antd';
+import { Alert, Form, Input, Button, Card, Typography, Layout, App } from 'antd';
 import { UserOutlined, LockOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import apiClient from '../api/apiClient';
@@ -10,16 +10,22 @@ const { Content } = Layout;
 
 const LoginPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
   const navigate = useNavigate();
   const setAuth = useAuthStore((state) => state.setAuth);
+  const logout = useAuthStore((state) => state.logout);
+  const [form] = Form.useForm();
   
   // Хук Ant Design для уведомлений
   const { message: messageApi } = App.useApp();
 
   const onFinish = async (values: any) => {
     setLoading(true);
+    setLoginError(null);
     try {
       // 1. Принудительная очистка старого стора перед входом
+      logout();
+      localStorage.removeItem('token');
       localStorage.removeItem('treasury-auth-storage');
 
       const formData = new URLSearchParams();
@@ -60,7 +66,9 @@ const LoginPage: React.FC = () => {
     } catch (error: any) {
       console.error('Login error:', error);
       const errorMsg = error.response?.data?.detail || 'Ошибка авторизации.';
-      messageApi.error(errorMsg);
+      setLoginError(errorMsg);
+      form.setFieldsValue({ password: '' });
+      messageApi.error(errorMsg, 5);
     } finally {
       setLoading(false);
     }
@@ -75,19 +83,46 @@ const LoginPage: React.FC = () => {
             <Text type="secondary">Корпоративный платежный реестр</Text>
           </div>
           
-          <Form name="login" onFinish={onFinish} layout="vertical" size="large">
+          {loginError && (
+            <Alert
+              type="error"
+              showIcon
+              message={loginError}
+              style={{ marginBottom: 16 }}
+            />
+          )}
+
+          <Form
+            form={form}
+            name="treasury-login"
+            onFinish={onFinish}
+            layout="vertical"
+            size="large"
+            autoComplete="off"
+            initialValues={{ username: '', password: '' }}
+          >
             <Form.Item
               name="username"
               rules={[{ required: true, message: 'Введите логин AD' }]}
             >
-              <Input prefix={<UserOutlined style={{ color: '#bfbfbf' }} />} placeholder="Логин (AD)" />
+              <Input
+                prefix={<UserOutlined style={{ color: '#bfbfbf' }} />}
+                placeholder="Логин (AD)"
+                autoComplete="off"
+                onChange={() => setLoginError(null)}
+              />
             </Form.Item>
 
             <Form.Item
               name="password"
               rules={[{ required: true, message: 'Введите пароль' }]}
             >
-              <Input.Password prefix={<LockOutlined style={{ color: '#bfbfbf' }} />} placeholder="Пароль" />
+              <Input.Password
+                prefix={<LockOutlined style={{ color: '#bfbfbf' }} />}
+                placeholder="Пароль"
+                autoComplete="new-password"
+                onChange={() => setLoginError(null)}
+              />
             </Form.Item>
 
             <Form.Item style={{ marginBottom: 0 }}>

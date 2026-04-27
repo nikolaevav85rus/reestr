@@ -23,9 +23,13 @@ apiClient.interceptors.request.use((config) => {
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
+    const requestUrl = error.config?.url ?? '';
+    const isLoginRequest = requestUrl.includes('/auth/login');
+
     // Если 401 — разлогиниваем
-    if (error.response?.status === 401) {
+    if (error.response?.status === 401 && !isLoginRequest) {
       localStorage.removeItem('token');
+      localStorage.removeItem('treasury-auth-storage');
       window.location.href = '/login';
     }
     return Promise.reject(error);

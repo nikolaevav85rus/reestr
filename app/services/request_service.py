@@ -20,6 +20,9 @@ def get_gmt3_time():
     tz_moscow = timezone(timedelta(hours=3))
     return datetime.now(tz_moscow).replace(tzinfo=None)
 
+def request_title(req: PaymentRequest) -> str:
+    return f"Заявка № {req.request_number or str(req.id)[:8].upper()}"
+
 async def create_payment_request(db: AsyncSession, request_data: RequestCreate, user_id: UUID) -> PaymentRequest:
     """
     Создание черновика заявки. Шлюз не проверяется — черновик можно создать с любой датой.
@@ -169,7 +172,8 @@ async def update_request_status(
     db: AsyncSession, 
     request_id: UUID, 
     status: ApprovalStatus, 
-    reason: Optional[str] = None
+    reason: Optional[str] = None,
+    current_user: Optional[User] = None,
 ) -> PaymentRequest:
     """"""
     req = await get_request_by_id(db, request_id)
@@ -187,19 +191,28 @@ async def update_request_status(
     ))
 
     # Уведомления инициатору при изменении статуса
+    title = request_title(req)
     notif_map = {
-        ApprovalStatus.REJECTED:      ("REJECTED",      f"Заявка отклонена: {req.counterparty}, {req.amount:,.0f} ₽. Причина: {reason or '—'}"),
-        ApprovalStatus.CLARIFICATION: ("CLARIFICATION", f"По заявке требуется уточнение: {req.counterparty}, {req.amount:,.0f} ₽. Комментарий: {reason or '—'}"),
+        ApprovalStatus.APPROVED:      ("APPROVED",      f"{title}: согласована ФЭО. {req.counterparty}, {req.amount:,.0f} ₽."),
+        ApprovalStatus.REJECTED:      ("REJECTED",      f"{title}: отклонена. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {reason or '—'}"),
+        ApprovalStatus.CLARIFICATION: ("CLARIFICATION", f"{title}: требуется уточнение. {req.counterparty}, {req.amount:,.0f} ₽. Комментарий: {reason or '—'}"),
     }
     if status in notif_map:
         notif_type, text = notif_map[status]
+        if current_user and status == ApprovalStatus.APPROVED:
+            text = f"{title}: согласована ФЭО ({current_user.full_name}). {req.counterparty}, {req.amount:,.0f} ₽."
         db.add(Notification(user_id=req.creator_id, request_id=req.id, text=text, type=notif_type))
 
     await db.commit()
     await db.refresh(req)
     return req
 
-async def update_payment_status(db: AsyncSession, request_id: UUID, status: PaymentStatus) -> PaymentRequest:
+async def update_payment_status(
+    db: AsyncSession,
+    request_id: UUID,
+    status: PaymentStatus,
+    current_user: Optional[User] = None,
+) -> PaymentRequest:
     """"""
     req = await get_request_by_id(db, request_id)
     if not req:
@@ -216,6 +229,14 @@ async def update_payment_status(db: AsyncSession, request_id: UUID, status: Paym
         action="UPDATE_PAYMENT",
         changes={"old": old_status, "new": status}
     ))
+    if status == PaymentStatus.PAID:
+        actor = f" ({current_user.full_name})" if current_user else ""
+        db.add(Notification(
+            user_id=req.creator_id,
+            request_id=req.id,
+            text=f"{request_title(req)}: оплачена казначеем{actor}. {req.counterparty}, {req.amount:,.0f} ₽.",
+            type="PAID",
+        ))
     await db.commit()
     await db.refresh(req)
     return req

@@ -92,6 +92,7 @@ test.describe('UI regression: request workflow', () => {
   });
 
   test('role action layer exposes the expected primary workflow actions', async ({ page }) => {
+    test.setTimeout(120_000);
     test.skip(!allowedScenario, 'No allowed calendar/dictionary data found for UI workflow scenario.');
     test.skip(!blockedScenario, 'No blocked calendar/dictionary data found for UI exception scenario.');
 
@@ -131,7 +132,11 @@ test.describe('UI regression: request workflow', () => {
     await postJson(api, feo, `/requests/${memoDraft.id}/approve`);
     const memoPending = await createDraft(api, initiator, makeRequestPayload(allowedScenario!, `${memoMarker}-DIRECTOR`, 6106));
     await postJson(api, initiator, `/requests/${memoPending.id}/submit`);
-    await patchJson(api, feo, `/requests/${memoPending.id}/budget`, { is_budgeted: false });
+    const memoRequired = await patchJson<any>(api, feo, `/requests/${memoPending.id}/budget`, { is_budgeted: false });
+    expect(memoRequired.approval_status).toBe('MEMO_REQUIRED');
+    await postJson(api, initiator, `/requests/${memoPending.id}/memo_reason`, {
+      reason: `${memoMarker}-DIRECTOR off-budget reason`,
+    });
 
     await loginUi(page, USERS.director);
     await assertMarkerVisible(page, `${memoMarker}-DIRECTOR`);
