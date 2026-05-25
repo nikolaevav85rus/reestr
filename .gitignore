@@ -56,3 +56,8 @@ desktop.ini
 # ===== Misc generated =====
 project_structure.txt
 struct.txt
+
+# ===== Local test/review artifacts =====
+frontend/playwright-report/
+test-results/
+documentation/code-review-remarks.md
