@@ -6,6 +6,7 @@ import {
 import { SyncOutlined } from '@ant-design/icons';
 import apiClient from '../api/apiClient';
 import HasPermission from '../components/HasPermission';
+import { getErrorMessage } from '../utils/errorMessage';
 import {
   DAY_TYPE_CONFIG, DAY_TYPE_CYCLE,
   TEMPLATE_DAY_TYPE_CONFIG,
@@ -198,8 +199,8 @@ const CalendarPage: React.FC = () => {
         if (existing) await apiClient.delete(`/calendar/templates/${existing.id}`);
       }
       await fetchTemplates(groupIdTemplates);
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка сохранения');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка сохранения'));
     } finally {
       setSavingDay(null);
     }
@@ -213,8 +214,8 @@ const CalendarPage: React.FC = () => {
         await apiClient.post('/calendar/rules', { day_type: dayType, allowed_category: category });
       }
       await fetchRules();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
     }
   };
 
@@ -225,8 +226,8 @@ const CalendarPage: React.FC = () => {
       await apiClient.post(`/calendar/generate?group_id=${groupIdCal}&year=${calYear}&month=${calMonth}`);
       messageApi.success('Календарь успешно сгенерирован');
       await fetchCalendar(groupIdCal, calYear, calMonth);
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка при генерации');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка при генерации'));
     } finally {
       setGenerating(false);
     }
@@ -240,8 +241,8 @@ const CalendarPage: React.FC = () => {
     setCalDays(prev => prev.map(d => d.id === cell.id ? { ...d, day_type: nextType } : d));
     try {
       await apiClient.put(`/calendar/calendar/${cell.id}`, { day_type: nextType });
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
       // Откат при ошибке
       if (groupIdCal) fetchCalendar(groupIdCal, calYear, calMonth);
     }
@@ -369,7 +370,7 @@ const CalendarPage: React.FC = () => {
       key: 'templates',
       label: 'Шаблоны недели',
       children: (
-        <Space direction="vertical" style={{ width: '100%' }}>
+        <Space orientation="vertical" style={{ width: '100%' }}>
           <Row align="middle" gutter={12}>
             <Col><Text>Группа оплаты:</Text></Col>
             <Col>
@@ -411,7 +412,7 @@ const CalendarPage: React.FC = () => {
       key: 'calendar',
       label: 'Платёжный календарь',
       children: (
-        <Space direction="vertical" style={{ width: '100%' }}>
+        <Space orientation="vertical" style={{ width: '100%' }}>
           <Row align="middle" gutter={[12, 8]} wrap>
             <Col>
               <Select

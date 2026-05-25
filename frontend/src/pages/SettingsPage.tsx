@@ -4,6 +4,7 @@ import { FolderOpenOutlined, TeamOutlined, SaveOutlined, DeleteOutlined, ReloadO
 import UsersPage from './Users';
 import apiClient from '../api/apiClient';
 import { useAuthStore } from '../store/authStore';
+import { getErrorMessage } from '../utils/errorMessage';
 
 const { Title, Text } = Typography;
 
@@ -25,8 +26,8 @@ const StorageSettings: React.FC = () => {
     try {
       await apiClient.put('/settings/', { storage_path: values.storage_path });
       messageApi.success('Настройки сохранены. Изменения вступят в силу немедленно.');
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка при сохранении');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка при сохранении'));
     } finally {
       setLoading(false);
     }
@@ -38,9 +39,9 @@ const StorageSettings: React.FC = () => {
       <Alert
         type="info"
         style={{ marginBottom: 16 }}
-        message="Путь может быть относительным (от корня проекта) или абсолютным."
+        title="Путь может быть относительным (от корня проекта) или абсолютным."
         description={
-          <Space direction="vertical" size={2}>
+          <Space orientation="vertical" size={2}>
             <Text code>storage</Text>
             <Text code>C:\Documents\reestr_files</Text>
             <Text code>/mnt/nas/reestr</Text>
@@ -90,8 +91,8 @@ const MarkedDeletionSettings: React.FC = () => {
     try {
       const r = await apiClient.get('/requests/marked_for_deletion');
       setData(r.data);
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка загрузки');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка загрузки'));
     } finally {
       setLoading(false);
     }
@@ -104,8 +105,8 @@ const MarkedDeletionSettings: React.FC = () => {
       await apiClient.patch(`/requests/${id}/mark_deletion`);
       messageApi.success('Пометка снята');
       fetchMarked();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
     }
   };
 
@@ -113,7 +114,7 @@ const MarkedDeletionSettings: React.FC = () => {
     modal.confirm({
       title: `Удалить ${data.length} помеченных заявок?`,
       content: (
-        <Space direction="vertical">
+        <Space orientation="vertical">
           <Text>Будут безвозвратно удалены:</Text>
           <Text>— сами заявки</Text>
           <Text>— записи в журнале аудита</Text>
@@ -131,8 +132,8 @@ const MarkedDeletionSettings: React.FC = () => {
           const r = await apiClient.delete('/requests/marked_for_deletion');
           messageApi.success(r.data.message);
           setData([]);
-        } catch (e: any) {
-          messageApi.error(e.response?.data?.detail || 'Ошибка при удалении');
+        } catch (error: unknown) {
+          messageApi.error(getErrorMessage(error, 'Ошибка при удалении'));
         } finally {
           setPurging(false);
         }
@@ -194,7 +195,7 @@ const MarkedDeletionSettings: React.FC = () => {
       <Alert
         type="warning"
         style={{ marginBottom: 16 }}
-        message="Пометить заявку может инициатор (если не оплачена), ФЭО и администратор — в любом статусе."
+        title="Пометить заявку может инициатор (если не оплачена), ФЭО и администратор — в любом статусе."
         description="После удаления восстановление невозможно. Удаляются все связанные данные: аудит, уведомления, файлы."
       />
       <Space style={{ marginBottom: 12 }}>

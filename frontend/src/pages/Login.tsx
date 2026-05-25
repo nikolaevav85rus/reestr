@@ -1,12 +1,38 @@
 import React, { useState } from 'react';
-import { Alert, Form, Input, Button, Card, Typography, Layout, App } from 'antd';
-import { UserOutlined, LockOutlined } from '@ant-design/icons';
+import { Alert, App, Button, Card, Form, Input, Layout, Typography } from 'antd';
+import { LockOutlined, UserOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import apiClient from '../api/apiClient';
 import { useAuthStore } from '../store/authStore';
 
 const { Title, Text } = Typography;
 const { Content } = Layout;
+
+const parseLoginError = (error: any): string => {
+  const detail = error?.response?.data?.detail;
+  if (typeof detail === 'string' && detail.trim()) return detail;
+
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item: any) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object') {
+          if (typeof item.msg === 'string' && item.msg.trim()) return item.msg;
+          if (typeof item.message === 'string' && item.message.trim()) return item.message;
+        }
+        return '';
+      })
+      .filter(Boolean);
+    if (messages.length) return messages.join('; ');
+  }
+
+  if (detail && typeof detail === 'object') {
+    if (typeof detail.message === 'string' && detail.message.trim()) return detail.message;
+  }
+
+  if (!error?.response) return 'Сеть недоступна. Проверьте подключение и повторите вход.';
+  return 'Не удалось выполнить вход. Попробуйте еще раз.';
+};
 
 const LoginPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -15,60 +41,52 @@ const LoginPage: React.FC = () => {
   const setAuth = useAuthStore((state) => state.setAuth);
   const logout = useAuthStore((state) => state.logout);
   const [form] = Form.useForm();
-  
-  // Хук Ant Design для уведомлений
   const { message: messageApi } = App.useApp();
 
-  const onFinish = async (values: any) => {
+  const clearErrorOnUserInput = () => {
+    if (loginError) setLoginError(null);
+  };
+
+  const onFinish = async (values: { username: string; password: string }) => {
+    const username = values.username?.trim();
     setLoading(true);
     setLoginError(null);
+
     try {
-      // 1. Принудительная очистка старого стора перед входом
+      // Перед новой попыткой очищаем текущую auth-сессию, чтобы не жить на старом токене.
       logout();
-      localStorage.removeItem('token');
-      localStorage.removeItem('treasury-auth-storage');
 
       const formData = new URLSearchParams();
-      formData.append('username', values.username);
+      formData.append('username', username);
       formData.append('password', values.password);
 
       const response = await apiClient.post('/auth/login', formData, {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       });
 
-      // Логируем объект от бэкенда, чтобы увидеть реальную структуру
-      console.log('--- DEBUG: Данные от бэкенда ---', response.data);
-
       const { access_token, user, permissions } = response.data;
-
-      // 2. ГИБКАЯ ПРОВЕРКА ФЛАГА СУПЕРАДМИНА
-      // Проверяем: поле в корне, поле в объекте роли ИЛИ просто технический логин 'admin'
-      const isSuper = 
-        user.is_superadmin === true || 
-        user.role?.is_superadmin === true || 
+      const isSuper =
+        user.is_superadmin === true ||
+        user.role?.is_superadmin === true ||
         user.ad_login === 'admin';
 
       const userData = {
         id: user.id,
         ad_login: user.ad_login,
         full_name: user.full_name,
-        is_superadmin: isSuper
+        is_superadmin: isSuper,
       };
 
-      console.log('--- DEBUG: Итоговый объект в Zustand ---', userData);
-
-      // 3. Сохранение данных
       setAuth(access_token, userData, permissions || []);
       localStorage.setItem('token', access_token);
-      
+
       messageApi.success(`Добро пожаловать, ${user.full_name}!`);
-      navigate('/dashboard'); 
+      navigate('/dashboard');
     } catch (error: any) {
-      console.error('Login error:', error);
-      const errorMsg = error.response?.data?.detail || 'Ошибка авторизации.';
-      setLoginError(errorMsg);
-      form.setFieldsValue({ password: '' });
-      messageApi.error(errorMsg, 5);
+      const errorMessage = parseLoginError(error);
+      setLoginError(errorMessage);
+      form.setFieldsValue({ username, password: '' });
+      messageApi.error(errorMessage, 5);
     } finally {
       setLoading(false);
     }
@@ -79,15 +97,17 @@ const LoginPage: React.FC = () => {
       <Content style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
         <Card style={{ width: 400, boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
           <div style={{ textAlign: 'center', marginBottom: 24 }}>
-            <Title level={2} style={{ color: '#1890ff', marginBottom: 0 }}>Казначейство Метком</Title>
+            <Title level={2} style={{ color: '#1890ff', marginBottom: 0 }}>
+              Казначейство Метком
+            </Title>
             <Text type="secondary">Корпоративный платежный реестр</Text>
           </div>
-          
+
           {loginError && (
             <Alert
               type="error"
               showIcon
-              message={loginError}
+              title={loginError}
               style={{ marginBottom: 16 }}
             />
           )}
@@ -98,7 +118,7 @@ const LoginPage: React.FC = () => {
             onFinish={onFinish}
             layout="vertical"
             size="large"
-            autoComplete="off"
+            autoComplete="on"
             initialValues={{ username: '', password: '' }}
           >
             <Form.Item
@@ -106,10 +126,16 @@ const LoginPage: React.FC = () => {
               rules={[{ required: true, message: 'Введите логин AD' }]}
             >
               <Input
+                id="login-username"
+                name="username"
                 prefix={<UserOutlined style={{ color: '#bfbfbf' }} />}
                 placeholder="Логин (AD)"
-                autoComplete="off"
-                onChange={() => setLoginError(null)}
+                autoComplete="username"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                onKeyDown={clearErrorOnUserInput}
+                onPaste={clearErrorOnUserInput}
               />
             </Form.Item>
 
@@ -118,10 +144,13 @@ const LoginPage: React.FC = () => {
               rules={[{ required: true, message: 'Введите пароль' }]}
             >
               <Input.Password
+                id="login-password"
+                name="current-password"
                 prefix={<LockOutlined style={{ color: '#bfbfbf' }} />}
                 placeholder="Пароль"
-                autoComplete="new-password"
-                onChange={() => setLoginError(null)}
+                autoComplete="current-password"
+                onKeyDown={clearErrorOnUserInput}
+                onPaste={clearErrorOnUserInput}
               />
             </Form.Item>
 

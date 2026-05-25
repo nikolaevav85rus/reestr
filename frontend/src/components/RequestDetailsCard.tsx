@@ -2,24 +2,80 @@ import React from 'react';
 import { Button, Col, Empty, Row, Space, Tabs, Tag, Timeline, Typography } from 'antd';
 import { PaperClipOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { formatDateRu } from '../utils/excelExport';
+import { contractStatusKey, type HistoryColorConfig, type StatusConfig } from '../requestStatus';
 
 const { Text } = Typography;
 
-type StatusConfig = Record<string, { label: string; color: string }>;
+type RequestUserRef = {
+  id?: string;
+  full_name?: string;
+  ad_login?: string;
+};
+
+type RequestOrganizationRef = {
+  id?: string;
+  name?: string;
+};
+
+type RequestDirectionRef = {
+  id?: string;
+  name?: string;
+};
+
+type RequestBudgetItemRef = {
+  id?: string;
+  name?: string;
+  category?: string | null;
+};
+
+type RequestFileRef = {
+  filename?: string | null;
+  name?: string | null;
+};
+
+export type RequestDetailsItem = {
+  id: string;
+  request_number?: string | null;
+  payment_date?: string | null;
+  organization?: RequestOrganizationRef | null;
+  direction?: RequestDirectionRef | null;
+  counterparty?: string | null;
+  budget_item?: RequestBudgetItemRef | null;
+  amount?: number | null;
+  description?: string | null;
+  note?: string | null;
+  creator?: RequestUserRef | null;
+  created_at?: string | null;
+  file_path?: string | null;
+  file?: RequestFileRef | null;
+  approval_status: string;
+  payment_status: string;
+  contract_status: boolean | null;
+  is_budgeted?: boolean | null;
+  special_order?: boolean;
+  rejection_reason?: string | null;
+  gate_reason?: string | null;
+  feo_note?: string | null;
+  gate_approver?: RequestUserRef | null;
+};
+
+export type RequestHistoryItem = {
+  type: string;
+  text: string;
+  created_at: string;
+};
 
 type RequestDetailsCardProps = {
-  request: any;
-  history: any[];
+  request: RequestDetailsItem;
+  history: RequestHistoryItem[];
   approvalConfig: StatusConfig;
   paymentConfig: StatusConfig;
   contractConfig: StatusConfig;
   categoryConfig: Record<string, { label: string; color: string }>;
-  historyColor: Record<string, string>;
+  historyColor: HistoryColorConfig;
   onOpenFile?: (id: string, path: string) => void;
   actions?: React.ReactNode;
 };
-
-const CONTRACT_KEY = (v: boolean | null) => v === null ? 'null' : String(v);
 
 const cardBlockStyle: React.CSSProperties = {
   border: '1px solid #f0f0f0',
@@ -50,7 +106,9 @@ const longTextStyle: React.CSSProperties = {
   fontSize: 14,
 };
 
-function nextResponsible(r: any): string {
+type RequestWorkflowState = Pick<RequestDetailsItem, 'approval_status' | 'payment_status'>;
+
+function nextResponsible(r: RequestWorkflowState): string {
   if (r.approval_status === 'DRAFT') return 'Инициатор';
   if (r.approval_status === 'PENDING_GATE') return 'ФЭО';
   if (r.approval_status === 'PENDING') return 'ФЭО';
@@ -65,7 +123,7 @@ function nextResponsible(r: any): string {
   return '—';
 }
 
-function nextResponsibleTagText(r: any): string {
+function nextResponsibleTagText(r: RequestWorkflowState): string {
   if (r.approval_status === 'MEMO_REQUIRED') return 'Требуется обоснование';
   if (r.approval_status === 'PENDING_MEMO') return 'Ожидание согласования';
   return `Ответственный: ${nextResponsible(r)}`;
@@ -99,8 +157,8 @@ const RequestDetailsCard: React.FC<RequestDetailsCardProps> = ({
 }) => {
   const approvalCfg = approvalConfig[r.approval_status] ?? { label: r.approval_status, color: 'default' };
   const paymentCfg = paymentConfig[r.payment_status] ?? { label: r.payment_status, color: 'default' };
-  const contractCfg = contractConfig[CONTRACT_KEY(r.contract_status)] ?? { label: '—', color: 'default' };
-  const budgetCfg = contractConfig[CONTRACT_KEY(r.is_budgeted)] ?? { label: '—', color: 'default' };
+  const contractCfg = contractConfig[contractStatusKey(r.contract_status ?? null)] ?? { label: '—', color: 'default' };
+  const budgetCfg = contractConfig[contractStatusKey(r.is_budgeted ?? null)] ?? { label: '—', color: 'default' };
   const categoryCfg = r.budget_item?.category ? categoryConfig[r.budget_item.category] : null;
   const fileName = r.file_path ?? r.file?.filename ?? r.file?.name ?? null;
   const shouldShowReason = Boolean(r.rejection_reason) && ['REJECTED', 'CLARIFICATION'].includes(r.approval_status);

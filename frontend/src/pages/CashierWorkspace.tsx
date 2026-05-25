@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
+import type { Dayjs } from 'dayjs';
 import {
   App as AntdApp, Button, Card, Col, DatePicker, Dropdown, Input, InputNumber,
   Modal, Row, Select, Space, Switch, Table, Tag, Tooltip, Typography, Tabs,
@@ -12,46 +13,30 @@ import {
 import apiClient from '../api/apiClient';
 import { useAuthStore } from '../store/authStore';
 import { CATEGORY_CONFIG, DATE_PICKER_LOCALE } from '../constants';
+import {
+  CASHIER_APPROVAL_CONFIG as APPROVAL_CONFIG,
+  REQUEST_CONTRACT_CONFIG as CONTRACT_CONFIG,
+  REQUEST_HISTORY_COLOR as HISTORY_COLOR,
+  REQUEST_PAYMENT_CONFIG as PAYMENT_CONFIG,
+  contractStatusKey as CONTRACT_KEY,
+} from '../requestStatus';
 import ColSettingsDrawer from './ColSettingsDrawer';
 import type { ColDef, ColSetting } from './ColSettingsDrawer';
 import RequestDetailsCard from '../components/RequestDetailsCard';
+import AccountBalancesPanel from '../components/AccountBalancesPanel';
 import { exportRowsToExcel, formatDateRu, formatMoney, type ExcelColumn } from '../utils/excelExport';
+import {
+  appendMissingColumnSettings,
+  buildUserScopedStorageKey,
+  loadStoredColumnSettings,
+  normalizeColSettingWidth,
+  saveStoredColumnSettings,
+} from '../utils/columnSettings';
 
 const { Title, Text } = Typography;
 
-const APPROVAL_CONFIG: Record<string, { label: string; color: string }> = {
-  MEMO_REQUIRED: { label: 'Требует обоснования', color: 'orange' },
-  PENDING_MEMO: { label: 'Вне бюджета', color: 'volcano' },
-  APPROVED: { label: 'Согласовано', color: 'green' },
-};
-
-const PAYMENT_CONFIG: Record<string, { label: string; color: string }> = {
-  UNPAID: { label: 'Не оплачено', color: 'default' },
-  PAID: { label: 'Оплачено', color: 'green' },
-};
-
-const CONTRACT_KEY = (v: boolean | null) => v === null ? 'null' : String(v);
-const CONTRACT_CONFIG: Record<string, { label: string; color: string }> = {
-  'null': { label: 'Необработано', color: 'default' },
-  'true': { label: 'Есть', color: 'green' },
-  'false': { label: 'Нет', color: 'red' },
-};
 const MODAL_TOP_STYLE: React.CSSProperties = { top: 24 };
 const REQUEST_MODAL_WIDTH = 'min(1180px, calc(100vw - 96px))';
-
-const HISTORY_COLOR: Record<string, string> = {
-  APPROVED: 'green',
-  PAID: 'green',
-  SUSPENDED: 'red',
-  RESCHEDULED: 'green',
-  REJECTED: 'red',
-  CLARIFICATION: 'blue',
-  POSTPONED: 'orange',
-  MEMO_REQUIRED: 'orange',
-  GATE_REJECTED: 'purple',
-  OFF_BUDGET: 'orange',
-  EOD_UNPAID: 'gray',
-};
 
 const COLUMN_DEFS: ColDef[] = [
   { key: 'payment_date', label: 'Дата оплаты', defaultWidth: 150, defaultVisible: true, required: true },
@@ -74,54 +59,50 @@ function getDefaultColSettings(): ColSetting[] {
   return COLUMN_DEFS.map((d, i) => ({ key: d.key, visible: d.defaultVisible, order: i, width: Math.max(1, Math.round(d.defaultWidth / 10)) }));
 }
 
-function normalizeColSettingWidth(width: number): number {
-  if (!Number.isFinite(width) || width <= 0) return 10;
-  return width > 40 ? Math.max(1, Math.round(width / 10)) : width;
-}
-
 function loadColSettings(userId?: string): ColSetting[] {
+  const defaults = getDefaultColSettings();
   try {
-    const raw = localStorage.getItem(`ui_cashier_cols_${userId ?? 'default'}`);
-    if (!raw) return getDefaultColSettings();
-    const saved: ColSetting[] = JSON.parse(raw).map((s: ColSetting) => ({
-      ...s,
-      width: normalizeColSettingWidth(s.width),
-    }));
-    const existingKeys = new Set(saved.map(s => s.key));
-    const maxOrder = saved.reduce((m, s) => Math.max(m, s.order), -1);
-    let offset = 0;
-    for (const d of COLUMN_DEFS) {
-      if (!existingKeys.has(d.key)) {
-        let order = maxOrder + (++offset);
-        if (d.key === 'request_number') {
-          const paymentDateOrder = saved.find(s => s.key === 'payment_date')?.order;
+    const storageKey = buildUserScopedStorageKey('ui_cashier_cols_', userId);
+    const saved = loadStoredColumnSettings(storageKey, defaults, normalizeColSettingWidth);
+    return appendMissingColumnSettings(
+      [...saved],
+      COLUMN_DEFS,
+      (def, order) => ({
+        key: def.key,
+        visible: def.defaultVisible,
+        order,
+        width: Math.max(1, Math.round(def.defaultWidth / 10)),
+      }),
+      ({ def, saved: draft, fallbackOrder }) => {
+        if (def.key === 'request_number') {
+          const paymentDateOrder = draft.find((setting) => setting.key === 'payment_date')?.order;
           if (paymentDateOrder !== undefined) {
-            saved.forEach(s => {
-              if (s.order > paymentDateOrder) s.order += 1;
+            draft.forEach((setting) => {
+              if (setting.order > paymentDateOrder) setting.order += 1;
             });
-            order = paymentDateOrder + 1;
+            return paymentDateOrder + 1;
           }
         }
-        if (d.key === 'file') {
-          const requestNumberOrder = saved.find(s => s.key === 'request_number')?.order;
+        if (def.key === 'file') {
+          const requestNumberOrder = draft.find((setting) => setting.key === 'request_number')?.order;
           if (requestNumberOrder !== undefined) {
-            saved.forEach(s => {
-              if (s.order > requestNumberOrder) s.order += 1;
+            draft.forEach((setting) => {
+              if (setting.order > requestNumberOrder) setting.order += 1;
             });
-            order = requestNumberOrder + 1;
+            return requestNumberOrder + 1;
           }
         }
-        saved.push({ key: d.key, visible: d.defaultVisible, order, width: Math.max(1, Math.round(d.defaultWidth / 10)) });
-      }
-    }
-    return saved;
+        return fallbackOrder;
+      },
+    );
   } catch {
-    return getDefaultColSettings();
+    return defaults;
   }
 }
 
 function saveColSettings(userId: string | undefined, settings: ColSetting[]): void {
-  localStorage.setItem(`ui_cashier_cols_${userId ?? 'default'}`, JSON.stringify(settings));
+  const storageKey = buildUserScopedStorageKey('ui_cashier_cols_', userId);
+  saveStoredColumnSettings(storageKey, settings);
 }
 
 type CashierFilterState = {
@@ -131,6 +112,61 @@ type CashierFilterState = {
   budgetItem?: string;
   amountFrom?: number;
   amountTo?: number;
+};
+
+type PaymentStatus = string;
+type ApprovalStatus = string;
+type ContractStatus = boolean | null;
+
+type OrganizationRef = {
+  id: string;
+  name: string;
+};
+
+type DirectionRef = {
+  id?: string;
+  name?: string;
+};
+
+type BudgetItemRef = {
+  id: string;
+  name: string;
+  category?: string | null;
+};
+
+type UserRef = {
+  id?: string;
+  full_name?: string;
+  ad_login?: string;
+};
+
+type RequestHistoryItem = {
+  type: string;
+  text: string;
+  created_at: string;
+};
+
+type RequestRow = {
+  id: string;
+  request_number?: string | null;
+  payment_date?: string | null;
+  file_path?: string | null;
+  organization_id: string;
+  organization?: OrganizationRef | null;
+  direction?: DirectionRef | null;
+  counterparty?: string | null;
+  description?: string | null;
+  note?: string | null;
+  creator?: UserRef | null;
+  creator_id?: string;
+  budget_item_id?: string;
+  budget_item?: BudgetItemRef | null;
+  amount: number;
+  payment_status: PaymentStatus;
+  approval_status: ApprovalStatus;
+  contract_status: ContractStatus;
+  is_marked_for_deletion?: boolean;
+  [key: string]: unknown;
 };
 
 function loadCashierFilters(userId?: string): CashierFilterState {
@@ -238,16 +274,20 @@ const CashierWorkspace: React.FC = () => {
   const { message: messageApi } = AntdApp.useApp();
   const user = useAuthStore(s => s.user);
   const permissions = useAuthStore(s => s.permissions);
-  const canExport = permissions.includes('req_export_excel') || !!user?.is_superadmin;
-  const canPay = permissions.includes('req_pay') || !!user?.is_superadmin;
+  const isSuper = !!user?.is_superadmin;
+  const hasUiPerm = (permission: string) => isSuper || permissions.includes(permission);
+  const canExport = hasUiPerm('req_export_excel');
+  const canPay = hasUiPerm('req_pay');
+  const canBalanceView = hasUiPerm('account_balance_view');
+  const canBalanceManage = hasUiPerm('account_balance_manage');
 
-  const [requests, setRequests] = useState<any[]>([]);
-  const [organizations, setOrganizations] = useState<any[]>([]);
-  const [budgetItems, setBudgetItems] = useState<any[]>([]);
+  const [requests, setRequests] = useState<RequestRow[]>([]);
+  const [organizations, setOrganizations] = useState<OrganizationRef[]>([]);
+  const [budgetItems, setBudgetItems] = useState<BudgetItemRef[]>([]);
   const [loading, setLoading] = useState(false);
   const [activeOrgId, setActiveOrgId] = useState<string>();
   const initialFilters = useMemo(() => loadCashierFilters(user?.id), [user?.id]);
-  const [filterDate, setFilterDate] = useState<any>(() => initialFilters.date ? dayjs(initialFilters.date) : dayjs());
+  const [filterDate, setFilterDate] = useState<Dayjs | null>(() => initialFilters.date ? dayjs(initialFilters.date) : dayjs());
   const [filterPayment, setFilterPayment] = useState<string | undefined>(() => initialFilters.payment);
   const [filterCounterparty, setFilterCounterparty] = useState(() => initialFilters.counterparty ?? '');
   const [filterBudgetItem, setFilterBudgetItem] = useState<string | undefined>(() => initialFilters.budgetItem);
@@ -258,16 +298,16 @@ const CashierWorkspace: React.FC = () => {
   });
   const [colSettings, setColSettings] = useState<ColSetting[]>(() => loadColSettings(user?.id));
   const [colDrawerOpen, setColDrawerOpen] = useState(false);
-  const [viewingRequest, setViewingRequest] = useState<any>(null);
-  const [requestHistory, setRequestHistory] = useState<any[]>([]);
+  const [viewingRequest, setViewingRequest] = useState<RequestRow | null>(null);
+  const [requestHistory, setRequestHistory] = useState<RequestHistoryItem[]>([]);
 
   const fetchRequests = useCallback(async () => {
     setLoading(true);
     try {
       const [reqRes, orgRes, budgetRes] = await Promise.all([
-        apiClient.get('/requests/all'),
-        apiClient.get('/dict/organizations'),
-        apiClient.get('/dict/budget_items?active_only=true'),
+        apiClient.get<RequestRow[]>('/requests/all'),
+        apiClient.get<OrganizationRef[]>('/dict/organizations'),
+        apiClient.get<BudgetItemRef[]>('/dict/budget_items?active_only=true'),
       ]);
       setRequests(reqRes.data);
       setOrganizations(orgRes.data);
@@ -283,7 +323,7 @@ const CashierWorkspace: React.FC = () => {
 
   useEffect(() => {
     if (!viewingRequest) { setRequestHistory([]); return; }
-    apiClient.get(`/requests/${viewingRequest.id}/history`)
+    apiClient.get<RequestHistoryItem[]>(`/requests/${viewingRequest.id}/history`)
       .then(r => setRequestHistory(r.data))
       .catch(() => setRequestHistory([]));
   }, [viewingRequest]);
@@ -324,18 +364,30 @@ const CashierWorkspace: React.FC = () => {
     }
   }, [orgTabs, activeOrgId]);
 
-  const currentRows = useMemo(() => {
+  const currentRows = useMemo<RequestRow[]>(() => {
     if (!activeOrgId) return [];
     return filteredRequests.filter(r => r.organization_id === activeOrgId);
   }, [filteredRequests, activeOrgId]);
+  const cashierDaySelected = !!filterDate?.format?.('YYYY-MM-DD');
+  const paymentTotalsByOrganization = useMemo<Record<string, number>>(() => {
+    if (!cashierDaySelected) return {};
+    const totals: Record<string, number> = {};
+    for (const request of filteredRequests) {
+      if (!request?.organization_id) continue;
+      if (request?.is_marked_for_deletion) continue;
+      totals[request.organization_id] = (totals[request.organization_id] ?? 0) + Number(request.amount ?? 0);
+    }
+    return totals;
+  }, [cashierDaySelected, filteredRequests]);
 
   const handlePay = async (requestId: string) => {
     try {
       await apiClient.post(`/requests/${requestId}/pay`);
       messageApi.success('Заявка оплачена');
       fetchRequests();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка оплаты');
+    } catch (error: unknown) {
+      const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      messageApi.error(detail || 'Ошибка оплаты');
     }
   };
 
@@ -350,7 +402,7 @@ const CashierWorkspace: React.FC = () => {
     }
   };
 
-  const renderActions = (r: any) => {
+  const renderActions = (r: RequestRow) => {
     if (canPay && r.approval_status === 'APPROVED' && r.payment_status === 'UNPAID') {
       return (
         <Button
@@ -391,13 +443,13 @@ const CashierWorkspace: React.FC = () => {
   const columnRenderers: Record<string, any> = {
     payment_date: {
       dataIndex: 'payment_date',
-      sorter: (a: any, b: any) => (a.payment_date ?? '').localeCompare(b.payment_date ?? ''),
+      sorter: (a: RequestRow, b: RequestRow) => (a.payment_date ?? '').localeCompare(b.payment_date ?? ''),
       render: (v: string) => v ? <span style={smallTextCellStyle}>{formatDateRu(v)}</span> : <Text type="secondary">—</Text>,
     },
     request_number: {
       dataIndex: 'request_number',
-      sorter: (a: any, b: any) => (a.request_number ?? '').localeCompare(b.request_number ?? ''),
-      render: (v: string, r: any) => (
+      sorter: (a: RequestRow, b: RequestRow) => (a.request_number ?? '').localeCompare(b.request_number ?? ''),
+      render: (v: string, r: RequestRow) => (
         <Button
           type="link"
           style={smallLinkWrapTextCellStyle}
@@ -411,9 +463,9 @@ const CashierWorkspace: React.FC = () => {
       ),
     },
     file: {
-      sorter: (a: any, b: any) => (a.file_path ?? '').localeCompare(b.file_path ?? ''),
+      sorter: (a: RequestRow, b: RequestRow) => (a.file_path ?? '').localeCompare(b.file_path ?? ''),
       align: 'center' as const,
-      render: (_: any, r: any) => r.file_path ? (
+      render: (_: unknown, r: RequestRow) => r.file_path ? (
         <Button
           type="link"
           size="small"
@@ -429,17 +481,17 @@ const CashierWorkspace: React.FC = () => {
       ) : <Text type="secondary">—</Text>,
     },
     organization: {
-      sorter: (a: any, b: any) => (a.organization?.name ?? '').localeCompare(b.organization?.name ?? ''),
-      render: (_: any, r: any) => nativeTitleText(r.organization?.name),
+      sorter: (a: RequestRow, b: RequestRow) => (a.organization?.name ?? '').localeCompare(b.organization?.name ?? ''),
+      render: (_: unknown, r: RequestRow) => nativeTitleText(r.organization?.name),
     },
     direction: {
-      sorter: (a: any, b: any) => (a.direction?.name ?? '').localeCompare(b.direction?.name ?? ''),
-      render: (_: any, r: any) => nativeTitleText(r.direction?.name, smallWrapTextCellStyle),
+      sorter: (a: RequestRow, b: RequestRow) => (a.direction?.name ?? '').localeCompare(b.direction?.name ?? ''),
+      render: (_: unknown, r: RequestRow) => nativeTitleText(r.direction?.name, smallWrapTextCellStyle),
     },
     counterparty: {
       dataIndex: 'counterparty',
       ellipsis: false,
-      sorter: (a: any, b: any) => (a.counterparty ?? '').localeCompare(b.counterparty ?? ''),
+      sorter: (a: RequestRow, b: RequestRow) => (a.counterparty ?? '').localeCompare(b.counterparty ?? ''),
       render: (v: string) => nativeTitleText(v, smallWrapTextCellStyle),
     },
     description: {
@@ -453,12 +505,12 @@ const CashierWorkspace: React.FC = () => {
       render: (v: string) => nativeTitleText(v, smallWrapTextCellStyle),
     },
     creator: {
-      sorter: (a: any, b: any) => (a.creator?.full_name ?? '').localeCompare(b.creator?.full_name ?? ''),
-      render: (_: any, r: any) => r.creator?.full_name ? nativeTitleText(r.creator.full_name, smallWrapTextCellStyle) : <Text type="secondary">—</Text>,
+      sorter: (a: RequestRow, b: RequestRow) => (a.creator?.full_name ?? '').localeCompare(b.creator?.full_name ?? ''),
+      render: (_: unknown, r: RequestRow) => r.creator?.full_name ? nativeTitleText(r.creator.full_name, smallWrapTextCellStyle) : <Text type="secondary">—</Text>,
     },
     budget_item: {
-      sorter: (a: any, b: any) => (a.budget_item?.name ?? '').localeCompare(b.budget_item?.name ?? ''),
-      render: (_: any, r: any) => {
+      sorter: (a: RequestRow, b: RequestRow) => (a.budget_item?.name ?? '').localeCompare(b.budget_item?.name ?? ''),
+      render: (_: unknown, r: RequestRow) => {
         const cfg = r.budget_item?.category ? CATEGORY_CONFIG[r.budget_item.category] : null;
         return r.budget_item ? statusTag(r.budget_item.name, cfg?.color ?? 'default') : '—';
       },
@@ -466,12 +518,12 @@ const CashierWorkspace: React.FC = () => {
     amount: {
       dataIndex: 'amount',
       align: 'right' as const,
-      sorter: (a: any, b: any) => a.amount - b.amount,
+      sorter: (a: RequestRow, b: RequestRow) => a.amount - b.amount,
       render: (v: number) => <Text strong style={smallCellStyle}>{v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽</Text>,
     },
     payment_status: {
       dataIndex: 'payment_status',
-      sorter: (a: any, b: any) => (a.payment_status ?? '').localeCompare(b.payment_status ?? ''),
+      sorter: (a: RequestRow, b: RequestRow) => (a.payment_status ?? '').localeCompare(b.payment_status ?? ''),
       render: (v: string) => {
         const cfg = PAYMENT_CONFIG[v] ?? { label: v, color: 'default' };
         return statusTag(cfg.label, cfg.color);
@@ -479,13 +531,13 @@ const CashierWorkspace: React.FC = () => {
     },
     contract_status: {
       dataIndex: 'contract_status',
-      sorter: (a: any, b: any) => CONTRACT_KEY(a.contract_status).localeCompare(CONTRACT_KEY(b.contract_status)),
+      sorter: (a: RequestRow, b: RequestRow) => CONTRACT_KEY(a.contract_status).localeCompare(CONTRACT_KEY(b.contract_status)),
       render: (v: boolean | null) => {
         const cfg = CONTRACT_CONFIG[CONTRACT_KEY(v)];
         return statusTag(cfg.label, cfg.color, true);
       },
     },
-    actions: { align: 'center' as const, render: (_: any, r: any) => renderActions(r) },
+    actions: { align: 'center' as const, render: (_: unknown, r: RequestRow) => renderActions(r) },
   };
 
   const secondaryColumnKeys = useMemo(
@@ -522,7 +574,7 @@ const CashierWorkspace: React.FC = () => {
               ellipsis: renderer.ellipsis && secondaryRenderer.ellipsis,
               align: isStatusPair ? 'center' as const : renderer.align,
               sorter: renderer.sorter,
-              render: (v: any, r: any) => (
+              render: (v: unknown, r: RequestRow) => (
                 <div style={isStatusPair ? statusCellStyle : centeredPairCellStyle}>
                   <div>{renderer.render ? renderer.render(v, r) : v}</div>
                   <div style={{ ...nestedCellDividerStyle, width: '100%', display: 'flex', justifyContent: isStatusPair ? 'center' : 'flex-start' }}>
@@ -550,7 +602,7 @@ const CashierWorkspace: React.FC = () => {
     [colSettings, secondaryColumnKeys, canPay],
   );
 
-  const excelColumns: ExcelColumn[] = colSettings
+  const excelColumns: ExcelColumn<RequestRow>[] = colSettings
     .filter(s => s.key !== 'actions')
     .filter(s => !secondaryColumnKeys.has(s.key))
     .map(s => ({
@@ -558,7 +610,7 @@ const CashierWorkspace: React.FC = () => {
       label: COLUMN_DEFS.find(d => d.key === s.key)?.label ?? s.key,
       visible: s.visible,
       order: s.order,
-      value: (r: any) => {
+      value: (r: RequestRow) => {
         if (s.key === 'payment_date') return formatDateRu(r.payment_date);
         if (s.key === 'file') return r.file_path ?? '';
         if (s.key === 'organization') return r.organization?.name;
@@ -568,7 +620,7 @@ const CashierWorkspace: React.FC = () => {
         if (s.key === 'amount') return formatMoney(r.amount);
         if (s.key === 'payment_status') return PAYMENT_CONFIG[r.payment_status]?.label ?? r.payment_status;
         if (s.key === 'contract_status') return CONTRACT_CONFIG[CONTRACT_KEY(r.contract_status)]?.label;
-        return r[s.key];
+        return r[s.key] as string | number | boolean | null | undefined;
       },
     }));
 
@@ -709,6 +761,23 @@ const CashierWorkspace: React.FC = () => {
         </Row>
       </Card>
       )}
+
+      <div style={{ width: '100%' }}>
+        <AccountBalancesPanel
+          contextKey="cashier"
+          userId={user?.id}
+          canView={canBalanceView}
+          canManage={canBalanceManage}
+          organizations={organizations}
+          dateFrom={filterDate?.format?.('YYYY-MM-DD') ?? null}
+          dateTo={filterDate?.format?.('YYYY-MM-DD') ?? null}
+          organizationId={activeOrgId}
+          daySelected={cashierDaySelected}
+          paymentTotalsByOrganization={paymentTotalsByOrganization}
+          defaultExpanded
+          compact
+        />
+      </div>
 
       {cashierTable}
 

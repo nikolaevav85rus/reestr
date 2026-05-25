@@ -1,16 +1,19 @@
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import uuid, os
 
 from app.models.audit import AuditLog
 from app.models.notification import Notification
 
 from app.api.deps import get_db, PermissionChecker
+from app.core.config import settings as app_settings
 from app.schemas.request import GatePreviewRequest, GatePreviewResponse, RequestCreate, RequestUpdate, RequestResponse, StatusUpdate
 from app.services import request_service
 from app.services.app_settings import get_storage_path
@@ -21,7 +24,7 @@ from app.models.organization import Organization
 from app.models.user import User
 from app.services import notification_service as notif_svc
 
-MOSCOW_TZ = timezone(timedelta(hours=3))
+MOSCOW_TZ = ZoneInfo(app_settings.APP_TIMEZONE)
 
 def has_perm(user: User, perm: str) -> bool:
     """Проверяет наличие права у пользователя (с учётом superadmin на роли)."""
@@ -34,11 +37,19 @@ def has_perm(user: User, perm: str) -> bool:
 def request_title(req) -> str:
     return f"Заявка № {req.request_number or str(req.id)[:8].upper()}"
 
-SUBMIT_CUTOFF_HOUR = 11  # До 11:00 МСК — обычный приём
-
-ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+SUBMIT_CUTOFF_HOUR = app_settings.SUBMIT_CUTOFF_HOUR  # До 11:00 МСК — обычный приём
 
 router = APIRouter()
+
+
+def _write_file_bytes(path: str, contents: bytes) -> None:
+    with open(path, "wb") as f:
+        f.write(contents)
+
+
+def _remove_file_if_exists(path: str) -> None:
+    if os.path.exists(path):
+        os.remove(path)
 
 DAY_TYPE_REASONS = {
     "NON_PAYMENT": "неплатёжный день",
@@ -259,9 +270,21 @@ async def upload_file(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("req_create"))
 ):
+    allowed_extensions = set(app_settings.UPLOAD_ALLOWED_EXTENSIONS)
+    allowed_content_types = set(app_settings.UPLOAD_ALLOWED_CONTENT_TYPES)
     ext = os.path.splitext(file.filename or "")[1].lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail=f"Допустимые форматы: {', '.join(ALLOWED_EXTENSIONS)}")
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Неподдерживаемый формат файла. Разрешены: {', '.join(sorted(allowed_extensions))}",
+        )
+
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if content_type not in allowed_content_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Неподдерживаемый MIME/content-type файла. Разрешены: {', '.join(sorted(allowed_content_types))}",
+        )
 
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
@@ -273,19 +296,39 @@ async def upload_file(
 
     # Читаем содержимое файла асинхронно ДО любых операций с БД
     contents = await file.read()
+    max_bytes = app_settings.UPLOAD_MAX_SIZE_MB * 1024 * 1024
+    if len(contents) > max_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Файл слишком большой. Максимальный размер: {app_settings.UPLOAD_MAX_SIZE_MB} МБ.",
+        )
 
-    # Удаляем старый файл если был
-    if req.file_path:
-        old_path = os.path.join(storage, req.file_path)
-        if os.path.exists(old_path):
-            os.remove(old_path)
-
+    old_path = os.path.join(storage, req.file_path) if req.file_path else None
     filename = f"{uuid.uuid4()}{ext}"
-    with open(os.path.join(storage, filename), "wb") as f:
-        f.write(contents)
+    new_path = os.path.join(storage, filename)
+
+    try:
+        await run_in_threadpool(_write_file_bytes, new_path, contents)
+    except OSError:
+        raise HTTPException(status_code=500, detail="Не удалось сохранить файл")
 
     req.file_path = filename
-    await db.commit()
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        try:
+            await run_in_threadpool(_remove_file_if_exists, new_path)
+        except OSError:
+            pass
+        raise
+
+    if old_path:
+        try:
+            await run_in_threadpool(_remove_file_if_exists, old_path)
+        except OSError:
+            pass
+
     # Явно перезагружаем с relationships через selectinload
     return await request_service.get_request_by_id(db, request_id)
 
@@ -342,7 +385,6 @@ async def reject_gate(
         raise HTTPException(status_code=400, detail="Заявка не ожидает разрешения шлюза")
     req.approval_status = ApprovalStatus.REJECTED
     req.rejection_reason = body.reason
-    await db.commit()
     await notif_svc.create_notification(
         db, user_id=req.creator_id, request_id=req.id,
         notif_type="GATE_REJECTED",
@@ -397,7 +439,6 @@ async def reject_memo(
         raise HTTPException(status_code=400, detail="Заявка не ожидает согласования по бюджету")
     req.approval_status = ApprovalStatus.REJECTED
     req.rejection_reason = body.reason
-    await db.commit()
     await notif_svc.create_notification(
         db, user_id=req.creator_id, request_id=req.id,
         notif_type="REJECTED",
@@ -548,7 +589,6 @@ async def suspend_request(
         raise HTTPException(status_code=400, detail="Отложить можно только заявку на согласовании или согласованную заявку")
     req.approval_status = ApprovalStatus.SUSPENDED
     req.rejection_reason = body.reason
-    await db.commit()
     await notif_svc.create_notification(
         db, user_id=req.creator_id, request_id=req.id,
         notif_type="SUSPENDED",

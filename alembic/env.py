@@ -23,6 +23,7 @@ from app.models.budget import BudgetItem
 from app.models.calendar import PaymentCalendar, DayTypeRule
 from app.models.audit import AuditLog
 from app.models.request import PaymentRequest
+from app.models.balance import BankAccount, DailyAccountBalance
 
 # Настройка конфигурации Alembic
 config = context.config

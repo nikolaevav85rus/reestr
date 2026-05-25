@@ -3,12 +3,13 @@ import {
   Table, Form, Input, Button, Select, Card, Space, Tag, Typography,
   Modal, Row, Col, Popconfirm, Tabs, Checkbox, App as AntdApp, Switch
 } from 'antd';
-import { 
-  UserAddOutlined, TeamOutlined, SearchOutlined, EditOutlined, SafetyCertificateOutlined, 
-  PlusOutlined, DeleteOutlined, KeyOutlined 
+import {
+  UserAddOutlined, TeamOutlined, SearchOutlined, EditOutlined, SafetyCertificateOutlined,
+  PlusOutlined, DeleteOutlined, KeyOutlined
 } from '@ant-design/icons';
 import apiClient from '../api/apiClient';
 import HasPermission from '../components/HasPermission';
+import { getErrorMessage } from '../utils/errorMessage';
 
 const { Title, Text } = Typography;
 
@@ -17,19 +18,19 @@ const UsersPage: React.FC = () => {
   const [roles, setRoles] = useState<any[]>([]);
   const [directions, setDirections] = useState<any[]>([]);
   const [allPermissions, setAllPermissions] = useState<any[]>([]);
-  
+
   const [tableLoading, setTableLoading] = useState(false);
   const [submitLoading, setSubmitLoading] = useState(false);
-  
+
   const [userSearch, setUserSearch] = useState('');
   const [roleSearch, setRoleSearch] = useState('');
-  
+
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [isPassModalOpen, setIsPassModalOpen] = useState(false);
   const [isRoleModalOpen, setIsRoleModalOpen] = useState(false);
   const [isRoleEditModalOpen, setIsRoleEditModalOpen] = useState(false);
   const [isNewRoleModalOpen, setIsNewRoleModalOpen] = useState(false);
-  
+
   const [selectedUser, setSelectedUser] = useState<any>(null);
   const [selectedRole, setSelectedRole] = useState<any>(null);
   const [copyFromRoleId, setCopyFromRoleId] = useState<string | undefined>();
@@ -83,8 +84,8 @@ const UsersPage: React.FC = () => {
       messageApi.success('Пользователь сохранен');
       setIsUserModalOpen(false);
       fetchData();
-    } catch (e: any) { 
-      messageApi.error(e.response?.data?.detail || 'Ошибка при сохранении'); 
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка при сохранении'));
     }
     finally { setSubmitLoading(false); }
   };
@@ -94,8 +95,8 @@ const UsersPage: React.FC = () => {
       await apiClient.delete(`/users/${id}`);
       messageApi.success('Сотрудник удален');
       fetchData();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка при удалении');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка при удалении'));
     }
   };
 
@@ -122,20 +123,20 @@ const UsersPage: React.FC = () => {
   const userColumns = [
     { title: 'Логин', dataIndex: 'ad_login', width: 120, ...getColumnSearchProps('ad_login'), sorter: (a: any, b: any) => a.ad_login.localeCompare(b.ad_login) },
     { title: 'ФИО', dataIndex: 'full_name', ...getColumnSearchProps('full_name'), sorter: (a: any, b: any) => a.full_name.localeCompare(b.full_name), render: (t: string) => <b>{t}</b> },
-    { 
-      title: 'Роль', 
+    {
+      title: 'Роль',
       filters: roles.map(r => ({ text: r.label, value: r.id })),
       onFilter: (value: any, record: any) => record.role?.id === value,
       sorter: (a: any, b: any) => (a.role?.label || '').localeCompare(b.role?.label || ''),
-      render: (_: any, r: any) => <Tag color={r.role?.color}>{r.role?.label || '—'}</Tag> 
+      render: (_: any, r: any) => <Tag color={r.role?.color}>{r.role?.label || '—'}</Tag>
     },
-    { 
-      title: 'ЦФО', 
+    {
+      title: 'ЦФО',
       filters: directions.map(d => ({ text: d.name, value: d.id })),
       filterSearch: true,
       onFilter: (value: any, record: any) => record.direction?.id === value,
       sorter: (a: any, b: any) => (a.direction?.name || '').localeCompare(b.direction?.name || ''),
-      render: (_: any, r: any) => r.direction?.name || '—' 
+      render: (_: any, r: any) => r.direction?.name || '—'
     },
     {
       title: 'Доступ', dataIndex: 'is_active', align: 'center' as const, width: 90,
@@ -191,9 +192,9 @@ const UsersPage: React.FC = () => {
                  <Button type="text" size="small" icon={<EditOutlined />} disabled={r.is_superadmin} onClick={() => { setSelectedRole(r); roleEditForm.setFieldsValue(r); setIsRoleEditModalOpen(true); }} />
               </HasPermission>
               <HasPermission permission="user_delete">
-                 <Popconfirm title="Удалить роль?" onConfirm={async () => { 
-                   try { await apiClient.delete(`/dict/roles/${r.id}`); messageApi.success('Роль удалена'); fetchData(); } 
-                   catch (e: any) { messageApi.error(e.response?.data?.detail || 'Ошибка'); }
+                 <Popconfirm title="Удалить роль?" onConfirm={async () => {
+                   try { await apiClient.delete(`/dict/roles/${r.id}`); messageApi.success('Роль удалена'); fetchData(); }
+                   catch (error: unknown) { messageApi.error(getErrorMessage(error, 'Ошибка')); }
                  }} disabled={r.is_superadmin}>
                     <Button type="text" size="small" danger icon={<DeleteOutlined />} disabled={r.is_superadmin} />
                  </Popconfirm>
@@ -212,7 +213,7 @@ const UsersPage: React.FC = () => {
         <Tabs items={tabItems} />
       </Card>
 
-      <Modal 
+      <Modal
         title={selectedUser ? "Правка сотрудника" : "Новый пользователь"} open={isUserModalOpen} onCancel={() => setIsUserModalOpen(false)} onOk={() => userForm.submit()} confirmLoading={submitLoading} forceRender destroyOnHidden
         footer={[
           <Button key="back" onClick={() => setIsUserModalOpen(false)}>Отмена</Button>,

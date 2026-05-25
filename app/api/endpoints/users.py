@@ -12,8 +12,54 @@ from app.core.security import get_password_hash # Предполагается, 
 
 router = APIRouter()
 
+
+def _serialize_user_safe(user: User) -> dict:
+    role_data = None
+    if user.role:
+        role_data = {
+            "id": str(user.role.id),
+            "name": user.role.name,
+            "label": user.role.label,
+            "color": user.role.color,
+            "is_superadmin": user.role.is_superadmin,
+            "permissions": [
+                {
+                    "id": str(perm.id),
+                    "name": perm.name,
+                    "label": perm.label,
+                    "category": perm.category,
+                }
+                for perm in (user.role.permissions or [])
+            ],
+        }
+
+    direction_data = None
+    if user.direction:
+        direction_data = {
+            "id": str(user.direction.id),
+            "name": user.direction.name,
+            "category_id": str(user.direction.category_id) if user.direction.category_id else None,
+            "is_active": user.direction.is_active,
+        }
+
+    return {
+        "id": str(user.id),
+        "ad_login": user.ad_login,
+        "full_name": user.full_name,
+        "is_active": user.is_active,
+        "role_id": str(user.role_id) if user.role_id else None,
+        "direction_id": str(user.direction_id) if user.direction_id else None,
+        "role": role_data,
+        "direction": direction_data,
+    }
+
+
 @router.get("/")
-async def get_users(search: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+async def get_users(
+    search: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(PermissionChecker("user_view"))
+):
     """Получить список пользователей с подгрузкой ролей и ЦФО."""
     query = select(User).options(selectinload(User.role), selectinload(User.direction)).order_by(User.full_name)
     if search:
@@ -22,7 +68,8 @@ async def get_users(search: Optional[str] = None, db: AsyncSession = Depends(get
             (User.ad_login.ilike(f"%{search}%"))
         )
     result = await db.execute(query)
-    return result.scalars().all()
+    users = result.scalars().all()
+    return [_serialize_user_safe(user) for user in users]
 
 @router.post("/")
 async def create_user(

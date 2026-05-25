@@ -35,12 +35,12 @@ export type RequestPayload = {
 };
 
 export async function loginApi(api: APIRequestContext, username: string): Promise<AuthSession> {
-  const response = await api.post(`${API_BASE_URL}/auth/login`, {
+  const response = await withRequestRetry(() => api.post(`${API_BASE_URL}/auth/login`, {
     form: {
       username,
       password: TEST_PASSWORD,
     },
-  });
+  }));
 
   expect(response.ok(), `login failed for ${username}: ${await response.text()}`).toBeTruthy();
   const data = await response.json();

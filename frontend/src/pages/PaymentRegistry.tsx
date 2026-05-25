@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import dayjs from 'dayjs';
+import type { Dayjs } from 'dayjs';
 import {
   Table, Tag, Button, Space, Typography, Card, Row, Col,
   Select, Input, Modal, Form, InputNumber, DatePicker,
@@ -17,21 +18,131 @@ import apiClient from '../api/apiClient';
 import { useAuthStore } from '../store/authStore';
 import { useSearchParams } from 'react-router-dom';
 import { CATEGORY_CONFIG, DATE_PICKER_LOCALE } from '../constants';
+import {
+  REQUEST_APPROVAL_CONFIG as APPROVAL_CONFIG,
+  REQUEST_CONTRACT_CONFIG as CONTRACT_CONFIG,
+  REQUEST_HISTORY_COLOR as HISTORY_COLOR,
+  REQUEST_PAYMENT_CONFIG as PAYMENT_CONFIG,
+  contractStatusKey as CONTRACT_KEY,
+} from '../requestStatus';
 import ColSettingsDrawer from './ColSettingsDrawer';
 import type { ColDef, ColSetting } from './ColSettingsDrawer';
 import RequestDetailsCard from '../components/RequestDetailsCard';
+import AccountBalancesPanel from '../components/AccountBalancesPanel';
 import { exportRowsToExcel, formatDateRu, formatMoney, type ExcelColumn } from '../utils/excelExport';
+import { getErrorMessage } from '../utils/errorMessage';
+import {
+  appendMissingColumnSettings,
+  buildUserScopedStorageKey,
+  loadStoredColumnSettings,
+  normalizeColSettingWidth,
+  saveStoredColumnSettings,
+} from '../utils/columnSettings';
+import {
+  buildDateTabbedMonths,
+  filterRegistryRequests,
+  getDisplayedRequests,
+  getPaymentTotalsByOrganization,
+  resolveActiveDateTabKeys,
+  type RegistryClientFilters,
+} from './paymentRegistryViewModel';
+import {
+  buildPaymentRegistryGroupedRows,
+  type OrganizationGroupRow as BaseOrganizationGroupRow,
+  type RegistryGroupRow as BaseRegistryGroupRow,
+  type RegistryTableRow as BaseRegistryTableRow,
+} from './paymentRegistryGrouping';
+import {
+  resolveRegistryActionDecision,
+  type RegistryActionKey,
+} from './paymentRegistryActions';
 
 const { Title, Text } = Typography;
 const { RangePicker } = DatePicker;
 
-const currentMonthRange = () => [dayjs().startOf('month'), dayjs().endOf('month')];
+type PaymentDateRange = [Dayjs | null, Dayjs | null];
+
+const currentMonthRange = (): PaymentDateRange => [dayjs().startOf('month'), dayjs().endOf('month')];
 
 type GatePreview = {
   allowed: boolean;
   reason?: string | null;
   reasons?: string[];
 };
+
+type PaymentStatus = string;
+type ApprovalStatus = string;
+type ContractStatus = boolean | null;
+
+type OrganizationRef = {
+  id: string;
+  name: string;
+};
+
+type DirectionCategoryRef = {
+  id?: string;
+  name?: string;
+};
+
+type DirectionRef = {
+  id?: string;
+  name?: string;
+  category?: DirectionCategoryRef | null;
+};
+
+type BudgetItemRef = {
+  id: string;
+  name: string;
+  category?: string | null;
+};
+
+type UserRef = {
+  id?: string;
+  full_name?: string;
+  ad_login?: string;
+};
+
+type RequestHistoryItem = {
+  type: string;
+  text: string;
+  created_at: string;
+};
+
+type RequestRow = {
+  id: string;
+  request_number?: string | null;
+  payment_date?: string | null;
+  organization_id: string;
+  organization?: OrganizationRef | null;
+  direction_id?: string;
+  direction?: DirectionRef | null;
+  counterparty?: string | null;
+  description?: string | null;
+  note?: string | null;
+  creator_id?: string;
+  creator?: UserRef | null;
+  budget_item_id?: string;
+  budget_item?: BudgetItemRef | null;
+  amount: number;
+  approval_status: ApprovalStatus;
+  payment_status: PaymentStatus;
+  contract_status: ContractStatus;
+  is_budgeted?: boolean | null;
+  is_marked_for_deletion?: boolean;
+  special_order?: boolean;
+  gate_reason?: string | null;
+  feo_note?: string | null;
+  rejection_reason?: string | null;
+  priority?: string | number | null;
+  file_path?: string | null;
+  created_at?: string;
+  gate_approver?: UserRef | null;
+  [key: string]: unknown;
+};
+
+type OrganizationGroupRow = BaseOrganizationGroupRow<RequestRow>;
+type RegistryGroupRow = BaseRegistryGroupRow<RequestRow>;
+type RegistryTableRow = BaseRegistryTableRow<RequestRow>;
 
 // ─── Конфиг колонок ──────────────────────────────────────────────────────────
 
@@ -65,60 +176,47 @@ function getDefaultColSettings(): ColSetting[] {
   }));
 }
 
-function normalizeColSettingWidth(width: number): number {
-  if (!Number.isFinite(width) || width <= 0) return 10;
-  return width > 40 ? Math.max(1, Math.round(width / 10)) : width;
-}
-
 function loadColSettings(userId?: string): ColSetting[] {
+  const defaults = getDefaultColSettings();
   try {
-    const storageKey = `ui_cols_${userId ?? 'default'}`;
+    const storageKey = buildUserScopedStorageKey('ui_cols_', userId);
     const versionKey = `${storageKey}_preset_version`;
-    const raw = localStorage.getItem(storageKey);
+
     if (localStorage.getItem(versionKey) !== REGISTRY_COLS_PRESET_VERSION) {
-      const defaults = getDefaultColSettings();
-      localStorage.setItem(storageKey, JSON.stringify(defaults));
+      saveStoredColumnSettings(storageKey, defaults);
       localStorage.setItem(versionKey, REGISTRY_COLS_PRESET_VERSION);
       return defaults;
     }
-    if (!raw) return getDefaultColSettings();
-    const saved: ColSetting[] = JSON.parse(raw).map((s: ColSetting) => ({
-      ...s,
-      width: normalizeColSettingWidth(s.width),
-    }));
-    const existingKeys = new Set(saved.map(s => s.key));
-    const maxOrder = saved.reduce((m, s) => Math.max(m, s.order), -1);
-    let offset = 0;
-    for (const d of COLUMN_DEFS) {
-      if (!existingKeys.has(d.key)) {
-        let order = maxOrder + (++offset);
-        if (d.key === 'request_number') {
-          const paymentDateOrder = saved.find(s => s.key === 'payment_date')?.order;
-          if (paymentDateOrder !== undefined) {
-            saved.forEach(s => {
-              if (s.order > paymentDateOrder) s.order += 1;
-            });
-            order = paymentDateOrder + 1;
-          }
-        }
-        saved.push({
-          key: d.key,
-          visible: d.defaultVisible,
-          order,
-          width: normalizeColSettingWidth(d.defaultWidth),
-          pairedWith: d.defaultPairedWith,
+
+    const saved = loadStoredColumnSettings(storageKey, defaults, normalizeColSettingWidth);
+    return appendMissingColumnSettings(
+      [...saved],
+      COLUMN_DEFS,
+      (def, order) => ({
+        key: def.key,
+        visible: def.defaultVisible,
+        order,
+        width: normalizeColSettingWidth(def.defaultWidth),
+        pairedWith: def.defaultPairedWith,
+      }),
+      ({ def, saved: draft, fallbackOrder }) => {
+        if (def.key !== 'request_number') return fallbackOrder;
+        const paymentDateOrder = draft.find((setting) => setting.key === 'payment_date')?.order;
+        if (paymentDateOrder === undefined) return fallbackOrder;
+        draft.forEach((setting) => {
+          if (setting.order > paymentDateOrder) setting.order += 1;
         });
-      }
-    }
-    return saved;
+        return paymentDateOrder + 1;
+      },
+    );
   } catch {
-    return getDefaultColSettings();
+    return defaults;
   }
 }
 
 function saveColSettings(userId: string | undefined, settings: ColSetting[]): void {
-  const storageKey = `ui_cols_${userId ?? 'default'}`;
-  localStorage.setItem(storageKey, JSON.stringify(settings));
+  const storageKey = buildUserScopedStorageKey('ui_cols_', userId);
+  saveStoredColumnSettings(storageKey, settings);
   localStorage.setItem(`${storageKey}_preset_version`, REGISTRY_COLS_PRESET_VERSION);
 }
 
@@ -318,47 +416,6 @@ function buildColumns(settings: ColSetting[], renderers: Record<string, any>, is
     .filter(Boolean);
 }
 
-// ─── Конфиги статусов ───────────────────────────────────────────────────────
-
-const APPROVAL_CONFIG: Record<string, { label: string; color: string }> = {
-  DRAFT:         { label: 'Черновик',          color: 'default'  },
-  PENDING_GATE:  { label: 'Требует исключения', color: 'purple'  },
-  PENDING:       { label: 'На согласовании',   color: 'blue'     },
-  MEMO_REQUIRED: { label: 'Требует обоснования', color: 'orange' },
-  PENDING_MEMO:  { label: 'Вне бюджета',       color: 'volcano'  },
-  APPROVED:      { label: 'Согласовано',       color: 'green'    },
-  REJECTED:      { label: 'Отклонено',         color: 'red'      },
-  CLARIFICATION: { label: 'На уточнении',      color: 'orange'   },
-  POSTPONED:     { label: 'Перенесено',        color: 'gold'     },
-  SUSPENDED:     { label: 'Отложена',          color: 'magenta'  },
-};
-
-const PAYMENT_CONFIG: Record<string, { label: string; color: string }> = {
-  UNPAID: { label: 'Не оплачено', color: 'default' },
-  PAID:   { label: 'Оплачено',    color: 'green'   },
-};
-
-const HISTORY_COLOR: Record<string, string> = {
-  APPROVED:      'green',
-  PAID:          'green',
-  SUSPENDED:     'red',
-  RESCHEDULED:   'green',
-  REJECTED:      'red',
-  CLARIFICATION: 'blue',
-  POSTPONED:     'orange',
-  MEMO_REQUIRED: 'orange',
-  GATE_REJECTED: 'purple',
-  OFF_BUDGET:    'orange',
-  EOD_UNPAID:    'gray',
-};
-
-// null → Необработано, true → Есть, false → Нет
-const CONTRACT_KEY = (v: boolean | null) => v === null ? 'null' : String(v);
-const CONTRACT_CONFIG: Record<string, { label: string; color: string }> = {
-  'null':  { label: 'Необработано', color: 'default' },
-  'true':  { label: 'Есть',         color: 'green'   },
-  'false': { label: 'Нет',          color: 'red'     },
-};
 const MODAL_TOP_STYLE: React.CSSProperties = { top: 24 };
 const REQUEST_MODAL_WIDTH = 'min(1180px, calc(100vw - 96px))';
 const REQUEST_SMALL_MODAL_WIDTH = 'min(760px, calc(100vw - 96px))';
@@ -418,12 +475,14 @@ const PaymentRegistry: React.FC = () => {
   const canEditAll      = hasUiPerm('req_edit_all');
   const canExportExcel  = hasUiPerm('req_export_excel');
   const canMarkDeletion = canEditAll || hasUiPerm('req_create');
+  const canBalanceView  = hasUiPerm('account_balance_view');
+  const canBalanceManage = hasUiPerm('account_balance_manage');
 
   // ─── Данные ─────────────────────────────────────────────────────────────
-  const [requests, setRequests]         = useState<any[]>([]);
-  const [organizations, setOrganizations] = useState<any[]>([]);
-  const [directions, setDirections]     = useState<any[]>([]);
-  const [budgetItems, setBudgetItems]   = useState<any[]>([]);
+  const [requests, setRequests]         = useState<RequestRow[]>([]);
+  const [organizations, setOrganizations] = useState<OrganizationRef[]>([]);
+  const [directions, setDirections]     = useState<DirectionRef[]>([]);
+  const [budgetItems, setBudgetItems]   = useState<BudgetItemRef[]>([]);
   const [loading, setLoading]           = useState(false);
   const initialFilters = useMemo(() => loadRegistryFilters(user?.id), [user?.id]);
 
@@ -432,7 +491,7 @@ const PaymentRegistry: React.FC = () => {
   const [filterDir, setFilterDir] = useState<string | undefined>(() => initialFilters.direction);
 
   // ─── Фильтры (клиент) ────────────────────────────────────────────────────
-  const [filterPaymentDates, setFilterPaymentDates] = useState<any>(() => {
+  const [filterPaymentDates, setFilterPaymentDates] = useState<PaymentDateRange | null>(() => {
     const saved = initialFilters.paymentDates;
     if (saved?.[0] || saved?.[1]) return [saved[0] ? dayjs(saved[0]) : null, saved[1] ? dayjs(saved[1]) : null];
     return currentMonthRange();
@@ -463,6 +522,12 @@ const PaymentRegistry: React.FC = () => {
   const [colDrawerOpen, setColDrawerOpen]           = useState(false);
   const [activeMonthKey, setActiveMonthKey]         = useState<string>();
   const [activeDayKey, setActiveDayKey]             = useState<string>();
+  const filterDateFrom = filterPaymentDates?.[0]?.format?.('YYYY-MM-DD') ?? null;
+  const filterDateTo = filterPaymentDates?.[1]?.format?.('YYYY-MM-DD') ?? null;
+
+  const handleFilterPaymentDatesChange = (dates: PaymentDateRange | null) => {
+    setFilterPaymentDates(dates);
+  };
 
   const resetFilters = () => {
     setFilterOrg(undefined); setFilterDir(undefined);
@@ -502,7 +567,7 @@ const PaymentRegistry: React.FC = () => {
   ]);
 
   const [isFormOpen, setIsFormOpen]         = useState(false);
-  const [editingRequest, setEditingRequest] = useState<any>(null);
+  const [editingRequest, setEditingRequest] = useState<RequestRow | null>(null);
   const [isCopying, setIsCopying]           = useState(false);
   const [formLoading, setFormLoading]       = useState(false);
   const [form] = Form.useForm();
@@ -538,16 +603,16 @@ const PaymentRegistry: React.FC = () => {
   const [filePreview, setFilePreview] = useState<{ url: string; name: string } | null>(null);
 
   // ─── Модалка просмотра заявки ─────────────────────────────────────────────
-  const [viewingRequest, setViewingRequest] = useState<any>(null);
-  const [requestHistory, setRequestHistory] = useState<any[]>([]);
-  const mergeRequest = useCallback((request: any) => {
+  const [viewingRequest, setViewingRequest] = useState<RequestRow | null>(null);
+  const [requestHistory, setRequestHistory] = useState<RequestHistoryItem[]>([]);
+  const mergeRequest = useCallback((request: Partial<RequestRow> & { id: string }) => {
     setRequests(prev => prev.map(r => r.id === request.id ? { ...r, ...request } : r));
-    setViewingRequest((current: any) => current?.id === request.id ? { ...current, ...request } : current);
+    setViewingRequest((current) => current?.id === request.id ? { ...current, ...request } : current);
   }, []);
 
   useEffect(() => {
     if (!viewingRequest) { setRequestHistory([]); return; }
-    apiClient.get(`/requests/${viewingRequest.id}/history`)
+    apiClient.get<RequestHistoryItem[]>(`/requests/${viewingRequest.id}/history`)
       .then(r => setRequestHistory(r.data))
       .catch(() => setRequestHistory([]));
   }, [viewingRequest]);
@@ -555,9 +620,9 @@ const PaymentRegistry: React.FC = () => {
   // ─── Загрузка справочников ───────────────────────────────────────────────
   useEffect(() => {
     Promise.all([
-      apiClient.get('/dict/organizations'),
-      apiClient.get('/dict/directions'),
-      apiClient.get('/dict/budget_items?active_only=true'),
+      apiClient.get<OrganizationRef[]>('/dict/organizations'),
+      apiClient.get<DirectionRef[]>('/dict/directions'),
+      apiClient.get<BudgetItemRef[]>('/dict/budget_items?active_only=true'),
     ]).then(([o, d, b]) => {
       setOrganizations(o.data);
       setDirections(d.data);
@@ -607,7 +672,7 @@ const PaymentRegistry: React.FC = () => {
       const params = new URLSearchParams();
       if (filterOrg) params.append('organization_id', filterOrg);
       if (filterDir) params.append('direction_id', filterDir);
-      const r = await apiClient.get(`/requests/all?${params}`);
+      const r = await apiClient.get<RequestRow[]>(`/requests/all?${params}`);
       setRequests(r.data);
     } catch {
       messageApi.error('Ошибка при загрузке заявок');
@@ -623,7 +688,7 @@ const PaymentRegistry: React.FC = () => {
   useEffect(() => {
     const viewId = searchParams.get('view');
     if (!viewId || requests.length === 0) return;
-    const found = requests.find((r: any) => r.id === viewId);
+    const found = requests.find((r) => r.id === viewId);
     if (found) {
       setViewingRequest(found);
       setSearchParams({}, { replace: true });
@@ -631,82 +696,62 @@ const PaymentRegistry: React.FC = () => {
   }, [searchParams, requests]);
 
   // ─── Клиентская фильтрация ───────────────────────────────────────────────
-  const filteredRequests = useMemo(() => {
-    return requests.filter(r => {
-      if (filterPaymentDates?.[0] && r.payment_date && r.payment_date < filterPaymentDates[0].format('YYYY-MM-DD')) return false;
-      if (filterPaymentDates?.[1] && r.payment_date && r.payment_date > filterPaymentDates[1].format('YYYY-MM-DD')) return false;
-      if (filterCounterparty && !r.counterparty?.toLowerCase().includes(filterCounterparty.toLowerCase())) return false;
-      if (filterDescription && !r.description?.toLowerCase().includes(filterDescription.toLowerCase()) && !r.note?.toLowerCase().includes(filterDescription.toLowerCase())) return false;
-      if (filterCategory && r.budget_item?.category !== filterCategory) return false;
-      if (filterBudgetItem && r.budget_item_id !== filterBudgetItem) return false;
-      if (filterAmountFrom !== undefined && r.amount < filterAmountFrom) return false;
-      if (filterAmountTo   !== undefined && r.amount > filterAmountTo)   return false;
-      if (filterApproval && r.approval_status !== filterApproval) return false;
-      if (filterPayment  && r.payment_status  !== filterPayment)  return false;
-      if (filterMarked === 'marked'   && !r.is_marked_for_deletion)  return false;
-      if (filterMarked === 'unmarked' &&  r.is_marked_for_deletion)  return false;
-      return true;
-    });
-  }, [requests, filterPaymentDates, filterCounterparty, filterDescription,
-      filterCategory, filterBudgetItem, filterAmountFrom, filterAmountTo, filterApproval, filterPayment, filterMarked]);
+  const clientFilters = useMemo<RegistryClientFilters>(() => ({
+    paymentDateFrom: filterPaymentDates?.[0]?.format('YYYY-MM-DD') ?? null,
+    paymentDateTo: filterPaymentDates?.[1]?.format('YYYY-MM-DD') ?? null,
+    counterparty: filterCounterparty,
+    description: filterDescription,
+    category: filterCategory,
+    budgetItem: filterBudgetItem,
+    amountFrom: filterAmountFrom,
+    amountTo: filterAmountTo,
+    approval: filterApproval,
+    payment: filterPayment,
+    marked: filterMarked,
+  }), [
+    filterPaymentDates,
+    filterCounterparty,
+    filterDescription,
+    filterCategory,
+    filterBudgetItem,
+    filterAmountFrom,
+    filterAmountTo,
+    filterApproval,
+    filterPayment,
+    filterMarked,
+  ]);
 
-  const dateTabbedMonths = useMemo(() => {
-    const byMonth = new Map<string, { key: string; label: string; count: number; days: Map<string, { key: string; label: string; count: number; rows: any[] }> }>();
-    const sorted = [...filteredRequests].sort((a, b) => (a.payment_date ?? '').localeCompare(b.payment_date ?? ''));
+  const filteredRequests = useMemo(
+    () => filterRegistryRequests(requests, clientFilters),
+    [requests, clientFilters],
+  );
 
-    for (const r of sorted) {
-      if (!r.payment_date) continue;
-      const date = dayjs(r.payment_date);
-      const monthKey = date.format('YYYY-MM');
-      const dayKey = date.format('YYYY-MM-DD');
-      const month = byMonth.get(monthKey) ?? {
-        key: monthKey,
-        label: new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' }).format(date.toDate()),
-        count: 0,
-        days: new Map(),
-      };
-      const day = month.days.get(dayKey) ?? {
-        key: dayKey,
-        label: date.format('DD.MM.YYYY'),
-        count: 0,
-        rows: [],
-      };
-
-      month.count += 1;
-      day.count += 1;
-      day.rows.push(r);
-      month.days.set(dayKey, day);
-      byMonth.set(monthKey, month);
-    }
-
-    return [...byMonth.values()].map(month => ({
-      ...month,
-      days: [...month.days.values()],
-    }));
-  }, [filteredRequests]);
+  const dateTabbedMonths = useMemo(
+    () => buildDateTabbedMonths(filteredRequests),
+    [filteredRequests],
+  );
 
   useEffect(() => {
-    if (!isDayTabbed || !dateTabbedMonths.length) {
-      setActiveMonthKey(undefined);
-      setActiveDayKey(undefined);
-      return;
-    }
-
-    const month = dateTabbedMonths.find(m => m.key === activeMonthKey) ?? dateTabbedMonths[0];
-    const day = month.days.find(d => d.key === activeDayKey) ?? month.days[0];
-
-    if (month.key !== activeMonthKey) setActiveMonthKey(month.key);
-    if (day?.key !== activeDayKey) setActiveDayKey(day?.key);
+    const next = resolveActiveDateTabKeys(isDayTabbed, dateTabbedMonths, activeMonthKey, activeDayKey);
+    if (next.activeMonthKey !== activeMonthKey) setActiveMonthKey(next.activeMonthKey);
+    if (next.activeDayKey !== activeDayKey) setActiveDayKey(next.activeDayKey);
   }, [isDayTabbed, dateTabbedMonths, activeMonthKey, activeDayKey]);
 
-  const displayedRequests = useMemo(() => {
-    if (!isDayTabbed) return filteredRequests;
-    const month = dateTabbedMonths.find(m => m.key === activeMonthKey);
-    const day = month?.days.find(d => d.key === activeDayKey);
-    return day?.rows ?? [];
-  }, [isDayTabbed, filteredRequests, dateTabbedMonths, activeMonthKey, activeDayKey]);
+  const displayedRequests = useMemo(
+    () => getDisplayedRequests(isDayTabbed, filteredRequests, dateTabbedMonths, activeMonthKey, activeDayKey),
+    [isDayTabbed, filteredRequests, dateTabbedMonths, activeMonthKey, activeDayKey],
+  );
 
-  const excelColumns: ExcelColumn[] = useMemo(() => {
+  const balanceDayDate = isDayTabbed && activeDayKey ? activeDayKey : null;
+  const balanceDateFrom = balanceDayDate ?? filterDateFrom;
+  const balanceDateTo = balanceDayDate ?? filterDateTo;
+  const dashboardDaySelected = isDayTabbed && !!activeDayKey;
+  const paymentTotalsByOrganization = useMemo<Record<string, number>>(
+    () => getPaymentTotalsByOrganization(dashboardDaySelected, displayedRequests),
+    [dashboardDaySelected, displayedRequests],
+  );
+
+  const excelColumns: ExcelColumn<RequestRow>[] = useMemo(() => {
     const secondaryKeys = new Set(colSettings.filter(s => s.pairedWith).map(s => s.pairedWith!));
     return colSettings
       .filter(s => s.key !== 'actions' && s.key !== 'special_icon')
@@ -716,7 +761,7 @@ const PaymentRegistry: React.FC = () => {
         label: COLUMN_DEFS.find(d => d.key === s.key)?.label ?? s.key,
         visible: s.visible,
         order: s.order,
-        value: (r: any) => {
+        value: (r: RequestRow) => {
           if (s.key === 'payment_date') return formatDateRu(r.payment_date);
           if (s.key === 'organization') return r.organization?.name;
           if (s.key === 'direction') return r.direction?.name;
@@ -726,8 +771,8 @@ const PaymentRegistry: React.FC = () => {
           if (s.key === 'approval_status') return approvalStatusLabel(r.approval_status);
           if (s.key === 'payment_status') return PAYMENT_CONFIG[r.payment_status]?.label ?? r.payment_status;
           if (s.key === 'contract_status') return CONTRACT_CONFIG[CONTRACT_KEY(r.contract_status)]?.label;
-          if (s.key === 'is_budgeted') return CONTRACT_CONFIG[CONTRACT_KEY(r.is_budgeted)]?.label;
-          return r[s.key];
+          if (s.key === 'is_budgeted') return CONTRACT_CONFIG[CONTRACT_KEY(r.is_budgeted ?? null)]?.label;
+          return r[s.key] as string | number | boolean | null | undefined;
         },
       }));
   }, [colSettings]);
@@ -737,66 +782,28 @@ const PaymentRegistry: React.FC = () => {
   };
 
   // ─── Группировка (org → dircat → ddsCat → request) ───────────────────────
-  const groupedData = useMemo(() => {
-    const byOrg = new Map<string, any>();
-    for (const r of displayedRequests) {
-      const orgId      = r.organization_id;
-      const orgName    = r.organization?.name ?? '—';
-      const dirCatId   = r.direction?.category?.id   ?? '__none__';
-      const dirCatName = r.direction?.category?.name ?? 'Без категории ЦФО';
-      const ddsCatKey  = r.budget_item?.category ?? 'OTHER';
-
-      if (!byOrg.has(orgId)) {
-        byOrg.set(orgId, { key: `org-${orgId}`, _type: 'org', _name: orgName, amount: 0, _count: 0, _dcMap: new Map() });
-      }
-      const orgRow = byOrg.get(orgId)!;
-      orgRow.amount += r.amount;
-      orgRow._count++;
-
-      if (!orgRow._dcMap.has(dirCatId)) {
-        orgRow._dcMap.set(dirCatId, { key: `org-${orgId}-dc-${dirCatId}`, _type: 'dircat', _name: dirCatName, amount: 0, _count: 0, _catMap: new Map() });
-      }
-      const dcRow = orgRow._dcMap.get(dirCatId)!;
-      dcRow.amount += r.amount;
-      dcRow._count++;
-
-      if (!dcRow._catMap.has(ddsCatKey)) {
-        dcRow._catMap.set(ddsCatKey, { key: `org-${orgId}-dc-${dirCatId}-cat-${ddsCatKey}`, _type: 'category', _catKey: ddsCatKey, amount: 0, _count: 0, children: [] });
-      }
-      const catRow = dcRow._catMap.get(ddsCatKey)!;
-      catRow.amount += r.amount;
-      catRow._count++;
-      catRow.children.push({ ...r, key: r.id, _type: 'request' });
-    }
-    return Array.from(byOrg.values())
-      .sort((a, b) => a._name.localeCompare(b._name, 'ru'))
-      .map(org => ({
-        ...org,
-        children: Array.from(org._dcMap.values())
-          .sort((a: any, b: any) => a._name.localeCompare(b._name, 'ru'))
-          .map((dc: any) => ({
-            ...dc,
-            children: Array.from(dc._catMap.values())
-              .sort((a: any, b: any) => (CATEGORY_CONFIG[a._catKey]?.label ?? a._catKey).localeCompare(CATEGORY_CONFIG[b._catKey]?.label ?? b._catKey, 'ru'))
-              .map((cat: any) => ({
-                ...cat,
-                children: [...cat.children].sort((a: any, b: any) => (a.payment_date ?? '').localeCompare(b.payment_date ?? '')),
-              })),
-          })),
-      }));
-  }, [displayedRequests]);
+  const groupedData = useMemo<OrganizationGroupRow[]>(
+    () =>
+      buildPaymentRegistryGroupedRows(displayedRequests, {
+        unknownOrganizationName: '—',
+        noDirectionCategoryId: '__none__',
+        unknownDirectionCategoryName: 'Без категории ЦФО',
+        defaultBudgetCategoryKey: 'OTHER',
+      }),
+    [displayedRequests],
+  );
 
   const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
 
   useEffect(() => {
     if (!isGrouped) { setExpandedKeys([]); return; }
-    const orgKeys = groupedData.map((o: any) => o.key);
+    const orgKeys = groupedData.map((o) => o.key);
     if (expandLevel === 'org') { setExpandedKeys([]); return; }
-    const dcKeys = groupedData.flatMap((o: any) => (o.children ?? []).map((dc: any) => dc.key));
+    const dcKeys = groupedData.flatMap((o) => o.children.map((dc) => dc.key));
     if (expandLevel === 'dircat') { setExpandedKeys(orgKeys); return; }
     if (expandLevel === 'cat') { setExpandedKeys([...orgKeys, ...dcKeys]); return; }
-    const catKeys = groupedData.flatMap((o: any) =>
-      (o.children ?? []).flatMap((dc: any) => (dc.children ?? []).map((c: any) => c.key))
+    const catKeys = groupedData.flatMap((o) =>
+      o.children.flatMap((dc) => dc.children.map((c) => c.key))
     );
     setExpandedKeys([...orgKeys, ...dcKeys, ...catKeys]);
   }, [isGrouped, groupedData, expandLevel]);
@@ -833,18 +840,15 @@ const PaymentRegistry: React.FC = () => {
       setIsFormOpen(false);
       setFileList([]);
       fetchRequests();
-    } catch (e: any) {
-      const detail = e.response?.data?.detail;
-      const msg = typeof detail === 'string' ? detail
-        : Array.isArray(detail) ? detail.map((d: any) => d.msg).join('; ')
-        : (e.message ?? 'Ошибка при сохранении');
+    } catch (error: unknown) {
+      const msg = getErrorMessage(error, 'Ошибка при сохранении');
       notification.error({ message: 'Ошибка', description: msg, duration: 8 });
     } finally {
       setFormLoading(false);
     }
   };
 
-  const openEdit = (record: any) => {
+  const openEdit = (record: RequestRow) => {
     setIsCopying(false);
     setEditingRequest(record);
     form.setFieldsValue({
@@ -867,7 +871,7 @@ const PaymentRegistry: React.FC = () => {
     setTimeout(() => setIsFormOpen(true), 0);
   };
 
-  const openCopy = (record: any) => {
+  const openCopy = (record: RequestRow) => {
     setEditingRequest(null);  // создаём новую, не редактируем
     setIsCopying(true);
     form.resetFields();
@@ -937,8 +941,8 @@ const PaymentRegistry: React.FC = () => {
       await apiClient.patch(`/requests/${id}/mark_deletion`);
       messageApi.success(currentMark ? 'Пометка снята' : 'Заявка помечена на удаление');
       fetchRequests();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
     }
   };
 
@@ -953,8 +957,8 @@ const PaymentRegistry: React.FC = () => {
         messageApi.success('Заявка отправлена на согласование');
       }
       fetchRequests();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка при отправке');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка при отправке'));
     }
   };
 
@@ -964,8 +968,8 @@ const PaymentRegistry: React.FC = () => {
     try {
       const response = await apiClient.patch(`/requests/${id}/budget`, { is_budgeted: value });
       mergeRequest(response.data);
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
       fetchRequests();
     }
   };
@@ -976,8 +980,8 @@ const PaymentRegistry: React.FC = () => {
     setRequests(prev => prev.map(r => r.id === id ? { ...r, contract_status: value } : r));
     try {
       await apiClient.patch(`/requests/${id}/contract`, { contract_status: value });
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
       fetchRequests();
     }
   };
@@ -988,8 +992,8 @@ const PaymentRegistry: React.FC = () => {
       await apiClient.post(`/requests/${id}/approve_gate`, { reason });
       messageApi.success('Исключение разрешено');
       fetchRequests();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
     }
   };
 
@@ -998,8 +1002,8 @@ const PaymentRegistry: React.FC = () => {
       await apiClient.post(`/requests/${id}/reject_gate`, { reason });
       messageApi.success('Запрос отклонён');
       fetchRequests();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
     }
   };
 
@@ -1013,8 +1017,8 @@ const PaymentRegistry: React.FC = () => {
       await apiClient.post(`/requests/${id}/suspend`, { reason });
       messageApi.success('Заявка отложена');
       fetchRequests();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
     }
   };
 
@@ -1028,8 +1032,8 @@ const PaymentRegistry: React.FC = () => {
       setUnsuspendModal({ open: false, requestId: '' });
       setUnsuspendDate(null);
       fetchRequests();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
     }
   };
 
@@ -1041,8 +1045,8 @@ const PaymentRegistry: React.FC = () => {
       await apiClient.post(`/requests/${id}/approve_memo`);
       messageApi.success('Внебюджетный платёж утверждён');
       fetchRequests();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
     }
   };
 
@@ -1051,8 +1055,8 @@ const PaymentRegistry: React.FC = () => {
       await apiClient.post(`/requests/${id}/reject_memo`, { reason });
       messageApi.success('Заявка отклонена');
       fetchRequests();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
     }
   };
 
@@ -1066,8 +1070,8 @@ const PaymentRegistry: React.FC = () => {
       setMoveDraftModal({ open: false, requestId: '' });
       setMoveDraftDate(null);
       fetchRequests();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
     }
   };
 
@@ -1083,8 +1087,8 @@ const PaymentRegistry: React.FC = () => {
       setPostponeDate(null);
       setPostponeReason('');
       fetchRequests();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
     }
   };
 
@@ -1100,8 +1104,8 @@ const PaymentRegistry: React.FC = () => {
       }
       mergeRequest(response.data);
       messageApi.success('Статус обновлён');
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка'));
     }
   };
 
@@ -1110,7 +1114,7 @@ const PaymentRegistry: React.FC = () => {
   };
 
   type WorkflowAction = {
-    key: string;
+    key: RegistryActionKey;
     label: string;
     icon?: React.ReactNode;
     danger?: boolean;
@@ -1196,13 +1200,23 @@ const PaymentRegistry: React.FC = () => {
   };
 
   // ─── Колонки таблицы ─────────────────────────────────────────────────────
-  const isGroupRow = (r: any) => r._type === 'org' || r._type === 'dircat' || r._type === 'category';
+  const isGroupRow = (row: unknown): row is RegistryGroupRow => {
+    if (!row || typeof row !== 'object') return false;
+    const rowType = (row as { _type?: unknown })._type;
+    return rowType === 'org' || rowType === 'dircat' || rowType === 'category';
+  };
+
+  const getRegistryRowKey = (row: RegistryTableRow): string => {
+    if (isGroupRow(row)) return row.key;
+    if ('key' in row && typeof row.key === 'string') return row.key;
+    return row.id;
+  };
   const COLUMN_RENDERERS: Record<string, any> = {
     payment_date: {
       dataIndex: 'payment_date',
       sorter: (a: any, b: any) => (a.payment_date ?? '').localeCompare(b.payment_date ?? ''),
-      render: (v: string, r: any) => {
-        if (r._type === 'org') return (
+      render: (v: string, r: RegistryTableRow) => {
+        if (isGroupRow(r) && r._type === 'org') return (
           <Text strong style={{ fontSize: 12 }}>
             {r._name}
             <Text type="secondary" style={{ fontWeight: 'normal', fontSize: 12, marginLeft: 8 }}>
@@ -1210,13 +1224,13 @@ const PaymentRegistry: React.FC = () => {
             </Text>
           </Text>
         );
-        if (r._type === 'dircat') return (
+        if (isGroupRow(r) && r._type === 'dircat') return (
           <span>
             <Tag color="purple" style={{ marginRight: 4 }}>{r._name}</Tag>
             <Text type="secondary" style={{ fontSize: 12 }}>({r._count})</Text>
           </span>
         );
-        if (r._type === 'category') {
+        if (isGroupRow(r) && r._type === 'category') {
           const cfg = CATEGORY_CONFIG[r._catKey];
           return (
             <span>
@@ -1315,18 +1329,18 @@ const PaymentRegistry: React.FC = () => {
       dataIndex: 'amount',
       align: 'right' as const,
       sorter: (a: any, b: any) => a.amount - b.amount,
-      render: (v: number, r: any) => {
-        if (r._type === 'org') return (
+      render: (v: number, r: RegistryTableRow) => {
+        if (isGroupRow(r) && r._type === 'org') return (
           <Text strong style={{ color: '#1677ff', fontSize: 12 }}>
             {v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽
           </Text>
         );
-        if (r._type === 'dircat') return (
+        if (isGroupRow(r) && r._type === 'dircat') return (
           <Text style={{ color: '#722ed1', fontSize: 12 }}>
             {v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽
           </Text>
         );
-        if (r._type === 'category') return (
+        if (isGroupRow(r) && r._type === 'category') return (
           <Text style={{ color: '#389e0d', fontSize: 12 }}>
             {v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽
           </Text>
@@ -1450,125 +1464,164 @@ const PaymentRegistry: React.FC = () => {
       align: 'center' as const,
       render: (_: any, r: any) => {
         if (isGroupRow(r)) return null;
-        const isOwner    = r.creator_id === user?.id || !!user?.is_superadmin;
-        const isDraft    = r.approval_status === 'DRAFT';
-        const isApproved = r.approval_status === 'APPROVED';
-        const isUnpaid   = r.payment_status  === 'UNPAID';
-        const isMemoRequired = r.approval_status === 'MEMO_REQUIRED';
-        const canResubmit = isOwner && ['DRAFT', 'CLARIFICATION', 'POSTPONED'].includes(r.approval_status);
-        const canMoveToDraft = (isOwner && canCreate) || canEditAll;
+        const decision = resolveRegistryActionDecision(
+          r,
+          {
+            canCreate,
+            canEditAll,
+            canApprove,
+            canGateApprove,
+            canMemoApprove,
+            canPay,
+            canSuspend,
+            canMarkDeletion,
+          },
+          {
+            id: user?.id,
+            isSuperadmin: !!user?.is_superadmin,
+          },
+        );
+        const { primaryActionKey, secondaryActionKeys } = decision;
         const requestSummary = `${r.counterparty} — ${r.amount?.toLocaleString('ru-RU')} ₽`;
-
-        const primaryAction: WorkflowAction | undefined =
-          canCreate && canResubmit ? {
-            key: 'submit', label: 'Отправить', icon: <SendOutlined />,
-            run: () => handleSubmit(r.id),
-            confirmTitle: 'Отправить заявку на согласование?',
-            confirmDescription: requestSummary,
-            confirmOkText: 'Отправить',
-          } : canGateApprove && r.approval_status === 'PENDING_GATE' ? {
-            key: 'approve-exception', label: 'Разрешить исключение', icon: <CheckOutlined />, color: '#722ed1',
-            run: () => setGateModal({ open: true, type: 'approve', requestId: r.id, violation: r.gate_reason || '' }),
-          } : canApprove && r.approval_status === 'PENDING' ? {
-            key: 'approve', label: 'Согласовать', icon: <CheckOutlined />,
-            run: () => handleAction('approve', r.id),
-          } : canCreate && isOwner && isMemoRequired ? {
-            key: 'memo-reason', label: 'Обосновать', icon: <CheckOutlined />, color: '#fa8c16',
-            run: () => openReasonModal('memo_reason', r.id, 'Обоснование вне бюджета'),
-          } : canMemoApprove && r.approval_status === 'PENDING_MEMO' ? {
-            key: 'approve-memo', label: 'Утвердить вне бюджета', icon: <CheckOutlined />,
-            run: () => handleApproveMemo(r.id),
-            confirmTitle: 'Утвердить внебюджетный платёж?',
-            confirmDescription: requestSummary,
-            confirmOkText: 'Утвердить',
-          } : canPay && isApproved && isUnpaid ? {
-            key: 'pay', label: 'Оплатить', icon: <DollarOutlined />, color: '#52c41a',
-            run: () => handleAction('pay', r.id),
-            confirmTitle: 'Отметить как оплаченную?',
-            confirmDescription: requestSummary,
-            confirmOkText: 'Оплатить',
-          } : canSuspend && isApproved && isUnpaid ? {
-            key: 'suspend', label: 'Отложить', icon: <ClockCircleOutlined />, color: '#eb2f96',
-            run: () => setSuspendModal({ open: true, requestId: r.id }),
-          } : canSuspend && r.approval_status === 'SUSPENDED' ? {
-            key: 'unsuspend', label: 'Вернуть на согласование', icon: <ClockCircleOutlined />, color: '#fa8c16',
-            run: () => setUnsuspendModal({ open: true, requestId: r.id }),
-          } : canMoveToDraft && (isMemoRequired || r.approval_status === 'PENDING_MEMO' || r.approval_status === 'POSTPONED') ? {
-            key: 'move-to-draft', label: 'Вернуть в черновик', icon: <ClockCircleOutlined />, color: '#fa8c16',
-            run: () => setMoveDraftModal({ open: true, requestId: r.id }),
-          } : undefined;
+        const primaryAction: WorkflowAction | undefined = (() => {
+          switch (primaryActionKey) {
+            case 'submit':
+              return {
+                key: 'submit', label: 'Отправить', icon: <SendOutlined />,
+                run: () => handleSubmit(r.id),
+                confirmTitle: 'Отправить заявку на согласование?',
+                confirmDescription: requestSummary,
+                confirmOkText: 'Отправить',
+              };
+            case 'approve-exception':
+              return {
+                key: 'approve-exception', label: 'Разрешить исключение', icon: <CheckOutlined />, color: '#722ed1',
+                run: () => setGateModal({ open: true, type: 'approve', requestId: r.id, violation: r.gate_reason || '' }),
+              };
+            case 'approve':
+              return {
+                key: 'approve', label: 'Согласовать', icon: <CheckOutlined />,
+                run: () => handleAction('approve', r.id),
+              };
+            case 'memo-reason':
+              return {
+                key: 'memo-reason', label: 'Обосновать', icon: <CheckOutlined />, color: '#fa8c16',
+                run: () => openReasonModal('memo_reason', r.id, 'Обоснование вне бюджета'),
+              };
+            case 'approve-memo':
+              return {
+                key: 'approve-memo', label: 'Утвердить вне бюджета', icon: <CheckOutlined />,
+                run: () => handleApproveMemo(r.id),
+                confirmTitle: 'Утвердить внебюджетный платёж?',
+                confirmDescription: requestSummary,
+                confirmOkText: 'Утвердить',
+              };
+            case 'pay':
+              return {
+                key: 'pay', label: 'Оплатить', icon: <DollarOutlined />, color: '#52c41a',
+                run: () => handleAction('pay', r.id),
+                confirmTitle: 'Отметить как оплаченную?',
+                confirmDescription: requestSummary,
+                confirmOkText: 'Оплатить',
+              };
+            case 'suspend':
+              return {
+                key: 'suspend', label: 'Отложить', icon: <ClockCircleOutlined />, color: '#eb2f96',
+                run: () => setSuspendModal({ open: true, requestId: r.id }),
+              };
+            case 'unsuspend':
+              return {
+                key: 'unsuspend', label: 'Вернуть на согласование', icon: <ClockCircleOutlined />, color: '#fa8c16',
+                run: () => setUnsuspendModal({ open: true, requestId: r.id }),
+              };
+            case 'move-to-draft':
+              return {
+                key: 'move-to-draft', label: 'Вернуть в черновик', icon: <ClockCircleOutlined />, color: '#fa8c16',
+                run: () => setMoveDraftModal({ open: true, requestId: r.id }),
+              };
+            default:
+              return undefined;
+          }
+        })();
 
         const secondaryActions: WorkflowAction[] = [];
-        if (r.file_path) {
-          secondaryActions.push({ key: 'file', label: 'Открыть файл', icon: <PaperClipOutlined />, run: () => openFile(r.id, r.file_path) });
-        }
-        if ((canCreate || canEditAll) && isDraft && (isOwner || canEditAll)) {
-          secondaryActions.push({ key: 'edit', label: 'Редактировать', icon: <EditOutlined />, run: () => openEdit(r) });
-        }
-        if (canCreate) {
-          secondaryActions.push({ key: 'copy', label: 'Копировать', icon: <CopyOutlined />, run: () => openCopy(r) });
-        }
-        if (canMarkDeletion && (canEditAll || (isOwner && r.payment_status !== 'PAID'))) {
-          secondaryActions.push({
-            key: 'mark-deletion',
-            label: r.is_marked_for_deletion ? 'Снять пометку на удаление' : 'Пометить на удаление',
-            icon: <RestOutlined />,
-            danger: !r.is_marked_for_deletion,
-            run: () => handleMarkDeletion(r.id, r.is_marked_for_deletion),
-            confirmTitle: r.is_marked_for_deletion ? 'Снять пометку на удаление?' : 'Пометить на удаление?',
-            confirmDescription: r.is_marked_for_deletion ? 'Заявка будет восстановлена' : 'Заявка будет удалена администратором при очистке',
-            confirmOkText: r.is_marked_for_deletion ? 'Снять' : 'Пометить',
-          });
-        }
-        if (canApprove && r.approval_status === 'PENDING') {
-          secondaryActions.push(
-            { key: 'reject', label: 'Отклонить', icon: <CloseOutlined />, danger: true, run: () => openReasonModal('reject', r.id, 'Причина отклонения') },
-            { key: 'clarify', label: 'На уточнение', icon: <ClockCircleOutlined />, run: () => openReasonModal('clarify', r.id, 'Комментарий для уточнения') },
-            { key: 'postpone', label: 'Перенести', icon: <ClockCircleOutlined />, run: () => setPostponeModal({ open: true, requestId: r.id }) },
-          );
-          if (canSuspend) {
-            secondaryActions.push({ key: 'suspend-pending', label: 'Отложить', icon: <ClockCircleOutlined />, run: () => setSuspendModal({ open: true, requestId: r.id }) });
+        for (const actionKey of secondaryActionKeys) {
+          switch (actionKey) {
+            case 'file':
+              if (!r.file_path) break;
+              secondaryActions.push({ key: 'file', label: 'Открыть файл', icon: <PaperClipOutlined />, run: () => openFile(r.id, r.file_path) });
+              break;
+            case 'edit':
+              secondaryActions.push({ key: 'edit', label: 'Редактировать', icon: <EditOutlined />, run: () => openEdit(r) });
+              break;
+            case 'copy':
+              secondaryActions.push({ key: 'copy', label: 'Копировать', icon: <CopyOutlined />, run: () => openCopy(r) });
+              break;
+            case 'mark-deletion':
+              secondaryActions.push({
+                key: 'mark-deletion',
+                label: r.is_marked_for_deletion ? 'Снять пометку на удаление' : 'Пометить на удаление',
+                icon: <RestOutlined />,
+                danger: !r.is_marked_for_deletion,
+                run: () => handleMarkDeletion(r.id, r.is_marked_for_deletion),
+                confirmTitle: r.is_marked_for_deletion ? 'Снять пометку на удаление?' : 'Пометить на удаление?',
+                confirmDescription: r.is_marked_for_deletion ? 'Заявка будет восстановлена' : 'Заявка будет удалена администратором при очистке',
+                confirmOkText: r.is_marked_for_deletion ? 'Снять' : 'Пометить',
+              });
+              break;
+            case 'reject':
+              secondaryActions.push({ key: 'reject', label: 'Отклонить', icon: <CloseOutlined />, danger: true, run: () => openReasonModal('reject', r.id, 'Причина отклонения') });
+              break;
+            case 'clarify':
+              secondaryActions.push({ key: 'clarify', label: 'На уточнение', icon: <ClockCircleOutlined />, run: () => openReasonModal('clarify', r.id, 'Комментарий для уточнения') });
+              break;
+            case 'postpone':
+              secondaryActions.push({ key: 'postpone', label: 'Перенести', icon: <ClockCircleOutlined />, run: () => setPostponeModal({ open: true, requestId: r.id }) });
+              break;
+            case 'suspend-pending':
+              secondaryActions.push({ key: 'suspend-pending', label: 'Отложить', icon: <ClockCircleOutlined />, run: () => setSuspendModal({ open: true, requestId: r.id }) });
+              break;
+            case 'postpone-approved':
+              secondaryActions.push({ key: 'postpone-approved', label: 'Перенести', icon: <ClockCircleOutlined />, run: () => setPostponeModal({ open: true, requestId: r.id }) });
+              break;
+            case 'reject-exception':
+              secondaryActions.push({
+                key: 'reject-exception', label: 'Отклонить исключение', icon: <CloseOutlined />, danger: true,
+                run: () => setGateModal({ open: true, type: 'reject', requestId: r.id, violation: r.gate_reason || '' }),
+              });
+              break;
+            case 'memo-reason':
+              secondaryActions.push({
+                key: 'memo-reason',
+                label: 'Обосновать',
+                icon: <CheckOutlined />,
+                run: () => openReasonModal('memo_reason', r.id, 'Обоснование вне бюджета'),
+              });
+              break;
+            case 'cancel-memo':
+              secondaryActions.push({
+                key: 'cancel-memo',
+                label: 'Отменить',
+                icon: <CloseOutlined />,
+                danger: true,
+                run: () => openReasonModal('cancel_memo', r.id, 'Причина отмены'),
+              });
+              break;
+            case 'reject-memo':
+              secondaryActions.push({
+                key: 'reject-memo', label: 'Отклонить вне бюджета', icon: <CloseOutlined />, danger: true,
+                run: () => setRejectMemoModal({ open: true, requestId: r.id }),
+              });
+              break;
+            case 'suspend':
+              secondaryActions.push({ key: 'suspend', label: 'Отложить', icon: <ClockCircleOutlined />, run: () => setSuspendModal({ open: true, requestId: r.id }) });
+              break;
+            case 'move-to-draft':
+              secondaryActions.push({ key: 'move-to-draft', label: 'Вернуть в черновик', icon: <ClockCircleOutlined />, run: () => setMoveDraftModal({ open: true, requestId: r.id }) });
+              break;
+            default:
+              break;
           }
-        }
-        if (canApprove && isApproved && isUnpaid) {
-          secondaryActions.push({ key: 'postpone-approved', label: 'Перенести', icon: <ClockCircleOutlined />, run: () => setPostponeModal({ open: true, requestId: r.id }) });
-        }
-        if (canGateApprove && r.approval_status === 'PENDING_GATE') {
-          secondaryActions.push({
-            key: 'reject-exception', label: 'Отклонить исключение', icon: <CloseOutlined />, danger: true,
-            run: () => setGateModal({ open: true, type: 'reject', requestId: r.id, violation: r.gate_reason || '' }),
-          });
-        }
-        if (isMemoRequired) {
-          if (canCreate && isOwner && primaryAction?.key !== 'memo-reason') {
-            secondaryActions.push({
-              key: 'memo-reason',
-              label: 'Обосновать',
-              icon: <CheckOutlined />,
-              run: () => openReasonModal('memo_reason', r.id, 'Обоснование вне бюджета'),
-            });
-          }
-          if (canCreate && isOwner) {
-            secondaryActions.push({
-              key: 'cancel-memo',
-              label: 'Отменить',
-              icon: <CloseOutlined />,
-              danger: true,
-              run: () => openReasonModal('cancel_memo', r.id, 'Причина отмены'),
-            });
-          }
-        }
-        if (canMemoApprove && r.approval_status === 'PENDING_MEMO') {
-          secondaryActions.push({
-            key: 'reject-memo', label: 'Отклонить вне бюджета', icon: <CloseOutlined />, danger: true,
-            run: () => setRejectMemoModal({ open: true, requestId: r.id }),
-          });
-        }
-        if (canSuspend && isApproved && isUnpaid && primaryAction?.key !== 'suspend') {
-          secondaryActions.push({ key: 'suspend', label: 'Отложить', icon: <ClockCircleOutlined />, run: () => setSuspendModal({ open: true, requestId: r.id }) });
-        }
-        if (canMoveToDraft && (isMemoRequired || r.approval_status === 'PENDING_MEMO' || r.approval_status === 'POSTPONED') && primaryAction?.key !== 'move-to-draft') {
-          secondaryActions.push({ key: 'move-to-draft', label: 'Вернуть в черновик', icon: <ClockCircleOutlined />, run: () => setMoveDraftModal({ open: true, requestId: r.id }) });
         }
 
         return (
@@ -1586,7 +1639,7 @@ const PaymentRegistry: React.FC = () => {
       },
     },
   };
-  const renderRequestActions = (r: any) => COLUMN_RENDERERS.actions.render(null, r);
+  const renderRequestActions = (r: RequestRow) => COLUMN_RENDERERS.actions.render(null, r);
   const columns = useMemo(
     () => buildColumns(colSettings, COLUMN_RENDERERS, isGrouped),
     [
@@ -1630,17 +1683,20 @@ const PaymentRegistry: React.FC = () => {
         <Table
           dataSource={isGrouped ? groupedData : displayedRequests}
           columns={columns}
-          rowKey={(r) => r.key ?? r.id}
+          rowKey={(r: RegistryTableRow) => getRegistryRowKey(r)}
           loading={loading}
           size="small"
           bordered
           tableLayout="fixed"
           sticky={{ offsetHeader: 0 }}
           pagination={false}
-          rowClassName={(r) => {
-            if (r._type === 'org')      return 'row-group-org';
-            if (r._type === 'dircat')   return 'row-group-dircat';
-            if (r._type === 'category') return 'row-group-cat';
+          rowClassName={(r: RegistryTableRow) => {
+            if (isGroupRow(r)) {
+              if (r._type === 'org') return 'row-group-org';
+              if (r._type === 'dircat') return 'row-group-dircat';
+              if (r._type === 'category') return 'row-group-cat';
+              return '';
+            }
             if (r.is_marked_for_deletion) return 'row-marked-deletion';
             if (r.approval_status === 'PENDING_GATE') return 'row-pending-gate';
             if (r.approval_status === 'MEMO_REQUIRED') return 'row-memo-required';
@@ -1650,9 +1706,10 @@ const PaymentRegistry: React.FC = () => {
           }}
           expandable={isGrouped ? {
             expandedRowKeys: expandedKeys,
-            onExpand: (expanded, record) => {
+            onExpand: (expanded, record: RegistryTableRow) => {
+              const rowKey = getRegistryRowKey(record);
               setExpandedKeys(prev =>
-                expanded ? [...prev, record.key] : prev.filter((k: string) => k !== record.key)
+                expanded ? [...prev, rowKey] : prev.filter((k: string) => k !== rowKey)
               );
             },
           } : undefined}
@@ -1733,7 +1790,7 @@ const PaymentRegistry: React.FC = () => {
               style={{ width: 230 }} format="DD.MM.YYYY"
               placeholder={['Дата оплаты с', 'по']}
               value={filterPaymentDates}
-              onChange={setFilterPaymentDates}
+              onChange={handleFilterPaymentDatesChange}
               locale={DATE_PICKER_LOCALE}
             />
           </Col>
@@ -1855,6 +1912,22 @@ const PaymentRegistry: React.FC = () => {
       </Card>
       )}
 
+      <div style={{ width: '100%' }}>
+        <AccountBalancesPanel
+          contextKey="dashboard"
+          userId={user?.id}
+          canView={canBalanceView}
+          canManage={canBalanceManage}
+          organizations={organizations}
+          dateFrom={balanceDateFrom}
+          dateTo={balanceDateTo}
+          organizationId={filterOrg}
+          daySelected={dashboardDaySelected}
+          paymentTotalsByOrganization={paymentTotalsByOrganization}
+          defaultExpanded={false}
+        />
+      </div>
+
       {/* Таблица */}
       {registryTable}
 
@@ -1889,12 +1962,13 @@ const PaymentRegistry: React.FC = () => {
         confirmLoading={formLoading}
         width={REQUEST_MODAL_WIDTH}
         style={MODAL_TOP_STYLE}
+        forceRender
         destroyOnHidden
       >
         <Form form={form} layout="vertical" onFinish={handleFormSubmit} style={{ marginTop: 8 }}>
           {editingRequest && (
             <div style={{ marginBottom: 12, color: '#8c8c8c', fontSize: 12 }}>
-              Создана: {new Date(editingRequest.created_at).toLocaleString('ru-RU')}
+              Создана: {editingRequest.created_at ? new Date(editingRequest.created_at).toLocaleString('ru-RU') : '—'}
               {editingRequest.creator?.full_name && ` · ${editingRequest.creator.full_name}`}
             </div>
           )}
@@ -1972,7 +2046,7 @@ const PaymentRegistry: React.FC = () => {
                   <Alert
                     showIcon
                     type="info"
-                    message="Проверяем регламент оплаты..."
+                    title="Проверяем регламент оплаты..."
                     style={{ marginBottom: 12 }}
                   />
                 )}
@@ -1980,7 +2054,7 @@ const PaymentRegistry: React.FC = () => {
                   <Alert
                     showIcon
                     type={gatePreview.allowed ? 'success' : 'warning'}
-                    message={gatePreview.allowed ? 'Заявка разрешена' : 'Заявка требует дополнительного согласования'}
+                    title={gatePreview.allowed ? 'Заявка разрешена' : 'Заявка требует дополнительного согласования'}
                     description={gatePreview.allowed
                       ? 'По выбранной организации, статье ДДС и дате оплаты ограничений нет.'
                       : gatePreview.reason}
@@ -1991,7 +2065,7 @@ const PaymentRegistry: React.FC = () => {
                   <Alert
                     showIcon
                     type="info"
-                    message="Проверка регламента"
+                    title="Проверка регламента"
                     description="Выберите организацию, статью ДДС и дату оплаты."
                     style={{ marginBottom: 12 }}
                   />
@@ -2000,7 +2074,7 @@ const PaymentRegistry: React.FC = () => {
                   <Input.TextArea rows={4} placeholder="Необязательно" />
                 </Form.Item>
                 <Form.Item label="Файл (скан счёта / акта)">
-                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Space orientation="vertical" size={8} style={{ width: '100%' }}>
                     <Upload maxCount={1} beforeUpload={() => false}
                       fileList={fileList}
                       onChange={({ fileList: fl }) => setFileList(fl)}

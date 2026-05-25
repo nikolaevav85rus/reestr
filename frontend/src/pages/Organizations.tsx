@@ -9,21 +9,32 @@ import {
 import apiClient from '../api/apiClient';
 import HasPermission from '../components/HasPermission';
 import { CATEGORY_CONFIG } from '../constants';
+import { useAuthStore } from '../store/authStore';
+import { getErrorMessage } from '../utils/errorMessage';
 
 const { Title } = Typography;
 
 const OrganizationsPage: React.FC = () => {
+  const user = useAuthStore(s => s.user);
+  const permissions = useAuthStore(s => s.permissions);
+  const isSuper = !!user?.is_superadmin;
+  const hasUiPerm = (permission: string) => isSuper || permissions.includes(permission);
+  const canBalanceView = hasUiPerm('account_balance_view');
+  const canBalanceManage = hasUiPerm('account_balance_manage');
+  const canDictDelete = hasUiPerm('dict_delete');
+
   const [organizations, setOrganizations] = useState<any[]>([]);
   const [paymentGroups, setPaymentGroups] = useState<any[]>([]);
   const [clusters, setClusters] = useState<any[]>([]);
   const [directions, setDirections] = useState<any[]>([]);
   const [directionCategories, setDirectionCategories] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
+  const [usersLookupUnavailable, setUsersLookupUnavailable] = useState(false);
   const [budgetItems, setBudgetItems] = useState<any[]>([]);
-  
+
   const [tableLoading, setTableLoading] = useState(false);
   const [loading, setLoading] = useState(false);
-  
+
   const [orgSearch, setOrgSearch] = useState('');
   const [dirSearch, setDirSearch] = useState('');
   const [clusterSearch, setClusterSearch] = useState('');
@@ -37,6 +48,13 @@ const OrganizationsPage: React.FC = () => {
   const [isDirCatModalOpen, setIsDirCatModalOpen] = useState(false);
   const [editingDirCat, setEditingDirCat] = useState<any>(null);
   const [isBudgetItemModalOpen, setIsBudgetItemModalOpen] = useState(false);
+  const [isOrgAccountsModalOpen, setIsOrgAccountsModalOpen] = useState(false);
+  const [selectedOrganizationForAccounts, setSelectedOrganizationForAccounts] = useState<any>(null);
+  const [organizationAccounts, setOrganizationAccounts] = useState<any[]>([]);
+  const [organizationAccountsLoading, setOrganizationAccountsLoading] = useState(false);
+  const [isBankAccountModalOpen, setIsBankAccountModalOpen] = useState(false);
+  const [editingBankAccount, setEditingBankAccount] = useState<any>(null);
+  const [bankAccountSaving, setBankAccountSaving] = useState(false);
 
   const [editingOrg, setEditingOrg] = useState<any>(null);
   const [editingGroup, setEditingGroup] = useState<any>(null);
@@ -50,19 +68,19 @@ const OrganizationsPage: React.FC = () => {
   const [dirForm] = Form.useForm();
   const [dirCatForm] = Form.useForm();
   const [budgetItemForm] = Form.useForm();
+  const [bankAccountForm] = Form.useForm();
 
   const { message: messageApi } = AntdApp.useApp();
 
   const fetchData = async () => {
     setTableLoading(true);
     try {
-      const [o, g, c, d, dc, u, bi] = await Promise.all([
+      const [o, g, c, d, dc, bi] = await Promise.all([
         apiClient.get('/dict/organizations'),
         apiClient.get('/dict/payment_groups'),
         apiClient.get('/dict/clusters'),
         apiClient.get('/dict/directions'),
         apiClient.get('/dict/direction_categories'),
-        apiClient.get('/users/'),
         apiClient.get('/dict/budget_items'),
       ]);
       setOrganizations(o.data);
@@ -70,9 +88,16 @@ const OrganizationsPage: React.FC = () => {
       setClusters(c.data);
       setDirections(d.data);
       setDirectionCategories(dc.data);
-      setUsers(u.data);
       setBudgetItems(bi.data);
-    } catch (e) { messageApi.error('Ошибка при загрузке справочников'); }
+      try {
+        const usersResponse = await apiClient.get('/users/');
+        setUsers(usersResponse.data ?? []);
+        setUsersLookupUnavailable(false);
+      } catch {
+        setUsers([]);
+        setUsersLookupUnavailable(true);
+      }
+    } catch { messageApi.error('Ошибка при загрузке справочников'); }
     finally { setTableLoading(false); }
   };
 
@@ -90,8 +115,8 @@ const OrganizationsPage: React.FC = () => {
       setModal(false);
       setLoading(false);
       await fetchData();
-    } catch (e) { 
-      messageApi.error('Ошибка при сохранении'); 
+    } catch {
+      messageApi.error('Ошибка при сохранении');
       setLoading(false);
     }
   };
@@ -101,8 +126,97 @@ const OrganizationsPage: React.FC = () => {
       await apiClient.delete(`${url}/${id}`);
       messageApi.success('Успешно удалено');
       fetchData();
-    } catch (e: any) {
-      messageApi.error(e.response?.data?.detail || 'Ошибка при удалении');
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка при удалении'));
+    }
+  };
+
+  const loadOrganizationAccounts = async (organizationId: string) => {
+    if (!canBalanceView) return;
+    setOrganizationAccountsLoading(true);
+    try {
+      const response = await apiClient.get(`/balances/accounts?organization_id=${organizationId}`);
+      setOrganizationAccounts(response.data ?? []);
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка при загрузке расчетных счетов'));
+    } finally {
+      setOrganizationAccountsLoading(false);
+    }
+  };
+
+  const openOrganizationAccounts = async (organization: any) => {
+    setSelectedOrganizationForAccounts(organization);
+    setOrganizationAccounts([]);
+    setIsOrgAccountsModalOpen(true);
+    await loadOrganizationAccounts(organization.id);
+  };
+
+  const openCreateBankAccount = () => {
+    if (!selectedOrganizationForAccounts) return;
+    setEditingBankAccount(null);
+    setIsBankAccountModalOpen(true);
+  };
+
+  const openEditBankAccount = (account: any) => {
+    setEditingBankAccount(account);
+    setIsBankAccountModalOpen(true);
+  };
+
+  const bankAccountFormInitialValues = editingBankAccount
+    ? {
+      bank_name: editingBankAccount.bank_name,
+      account_number: editingBankAccount.account_number,
+      is_active: editingBankAccount.is_active,
+    }
+    : {
+      bank_name: '',
+      account_number: '',
+      is_active: true,
+    };
+
+  const saveBankAccount = async (values: any) => {
+    if (!selectedOrganizationForAccounts) return;
+    setBankAccountSaving(true);
+    const payload = {
+      organization_id: selectedOrganizationForAccounts.id,
+      bank_name: values.bank_name?.trim(),
+      account_number: values.account_number?.trim(),
+      is_active: !!values.is_active,
+    };
+    try {
+      if (editingBankAccount) {
+        await apiClient.put(`/balances/accounts/${editingBankAccount.id}`, payload);
+        messageApi.success('Расчетный счет обновлен');
+      } else {
+        await apiClient.post('/balances/accounts', payload);
+        messageApi.success('Расчетный счет создан');
+      }
+      setIsBankAccountModalOpen(false);
+      setEditingBankAccount(null);
+      await loadOrganizationAccounts(selectedOrganizationForAccounts.id);
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка при сохранении расчетного счета'));
+    } finally {
+      setBankAccountSaving(false);
+    }
+  };
+
+  const deleteBankAccount = async (account: any) => {
+    if (!selectedOrganizationForAccounts) return;
+    try {
+      await apiClient.delete(`/balances/accounts/${account.id}`);
+      messageApi.success('Расчетный счет удален');
+      await loadOrganizationAccounts(selectedOrganizationForAccounts.id);
+    } catch (error: unknown) {
+      const detail = getErrorMessage(error, 'Ошибка при удалении расчетного счета');
+      messageApi.error(detail);
+      if (
+        (error as { response?: { status?: number } } | null | undefined)?.response?.status === 400
+        && typeof detail === 'string'
+        && detail.includes('по нему есть остатки')
+      ) {
+        messageApi.info('Подсказка: отключите счет (Активен = Нет), затем повторите удаление.');
+      }
     }
   };
 
@@ -145,38 +259,79 @@ const OrganizationsPage: React.FC = () => {
     )
   });
 
-  const orgColumns = [
-    { 
-      title: 'Юр. лицо', dataIndex: 'name', 
+  const userFilterOptions = users.map((u) => ({ text: u.full_name, value: u.id }));
+  const userSelectOptions = users.map((u) => ({ value: u.id, label: u.full_name }));
+  const getUserFullName = (userId?: string | null) => users.find((u) => u.id === userId)?.full_name || 'вЂ”';
+
+  const orgColumns: any[] = [
+    {
+      title: 'Юр. лицо', dataIndex: 'name',
       ...getColumnSearchProps('name'),
       sorter: (a: any, b: any) => a.name.localeCompare(b.name),
-      render: (t: string) => <b>{t}</b> 
+      render: (t: string) => <b>{t}</b>
     },
-    { 
-      title: 'Группа оплаты', 
+    {
+      title: 'Группа оплаты',
       filters: paymentGroups.map(g => ({ text: g.name, value: g.id })),
       onFilter: (value: any, record: any) => record.payment_group_id === value,
       sorter: (a: any, b: any) => (paymentGroups.find(g => g.id === a.payment_group_id)?.name || '').localeCompare(paymentGroups.find(g => g.id === b.payment_group_id)?.name || ''),
-      render: (_: any, r: any) => paymentGroups.find(g => g.id === r.payment_group_id)?.name || '—' 
+      render: (_: any, r: any) => paymentGroups.find(g => g.id === r.payment_group_id)?.name || '—'
     },
-    { 
-      title: 'Кластер', 
+    {
+      title: 'Кластер',
       filters: clusters.map(c => ({ text: c.name, value: c.id })),
       onFilter: (value: any, record: any) => record.cluster_id === value,
       sorter: (a: any, b: any) => (clusters.find(c => c.id === a.cluster_id)?.name || '').localeCompare(clusters.find(c => c.id === b.cluster_id)?.name || ''),
-      render: (_: any, r: any) => clusters.find(c => c.id === r.cluster_id)?.name || '—' 
+      render: (_: any, r: any) => clusters.find(c => c.id === r.cluster_id)?.name || '—'
     },
-    { 
-      title: 'Директор', 
-      filters: users.map(u => ({ text: u.full_name, value: u.id })),
-      filterSearch: true,
+    {
+      title: 'Директор',
+      filters: userFilterOptions.length ? userFilterOptions : undefined,
+      filterSearch: userFilterOptions.length > 0,
       onFilter: (value: any, record: any) => record.director_id === value,
-      sorter: (a: any, b: any) => (users.find(u => u.id === a.director_id)?.full_name || '').localeCompare(users.find(u => u.id === b.director_id)?.full_name || ''),
-      render: (_: any, r: any) => users.find(u => u.id === r.director_id)?.full_name || '—' 
+      sorter: (a: any, b: any) => getUserFullName(a.director_id).localeCompare(getUserFullName(b.director_id)),
+      render: (_: any, r: any) => getUserFullName(r.director_id),
     },
-    activeColumn(),
-    actions('/dict/organizations', (r: any) => { setEditingOrg(r); orgForm.setFieldsValue({ ...r, prefix: r.prefix ?? '' }); setIsOrgModalOpen(true); }, 'Удалить юр. лицо?')
   ];
+  if (canBalanceView) {
+    orgColumns.push({
+      title: 'Расчетные счета',
+      width: 170,
+      align: 'center' as const,
+      render: (_: any, r: any) => (
+        <Button type="link" size="small" onClick={() => { void openOrganizationAccounts(r); }}>
+          Расчетные счета
+        </Button>
+      ),
+    });
+  }
+  orgColumns.push(
+    activeColumn(),
+    {
+      title: 'Действия', width: 100, align: 'center' as const,
+      render: (_: any, r: any) => (
+        <Space size="small">
+          <HasPermission permission="dict_edit">
+            <Button
+              type="text"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => {
+                setEditingOrg(r);
+                orgForm.setFieldsValue({ ...r, prefix: r.prefix ?? '' });
+                setIsOrgModalOpen(true);
+              }}
+            />
+          </HasPermission>
+          <HasPermission permission="dict_delete">
+            <Popconfirm title="Удалить юр. лицо?" onConfirm={() => handleDelete('/dict/organizations', r.id)}>
+              <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+            </Popconfirm>
+          </HasPermission>
+        </Space>
+      ),
+    },
+  );
 
   const dirColumns = [
     { title: 'Подразделение (ЦФО)', dataIndex: 'name', ...getColumnSearchProps('name'), sorter: (a: any, b: any) => a.name.localeCompare(b.name), render: (t: string) => <b>{t}</b> },
@@ -196,11 +351,11 @@ const OrganizationsPage: React.FC = () => {
     { title: 'Кластер', dataIndex: 'name', ...getColumnSearchProps('name'), sorter: (a: any, b: any) => a.name.localeCompare(b.name) },
     {
       title: 'Руководитель',
-      filters: users.map(u => ({ text: u.full_name, value: u.id })),
-      filterSearch: true,
+      filters: userFilterOptions.length ? userFilterOptions : undefined,
+      filterSearch: userFilterOptions.length > 0,
       onFilter: (value: any, record: any) => record.head_id === value,
-      sorter: (a: any, b: any) => (users.find(u => u.id === a.head_id)?.full_name || '').localeCompare(users.find(u => u.id === b.head_id)?.full_name || ''),
-      render: (_: any, r: any) => users.find(u => u.id === r.head_id)?.full_name || '—'
+      sorter: (a: any, b: any) => getUserFullName(a.head_id).localeCompare(getUserFullName(b.head_id)),
+      render: (_: any, r: any) => getUserFullName(r.head_id),
     },
     activeColumn(),
     actions('/dict/clusters', (r: any) => { setEditingCluster(r); clusterForm.setFieldsValue(r); setIsClusterModalOpen(true); }, 'Удалить кластер?')
@@ -252,6 +407,72 @@ const OrganizationsPage: React.FC = () => {
   const filteredClusters = clusters.filter(c => c.name.toLowerCase().includes(clusterSearch.toLowerCase()));
   const filteredGroups = paymentGroups.filter(g => g.name.toLowerCase().includes(groupSearch.toLowerCase()));
   const filteredBudgetItems = budgetItems.filter(b => b.name.toLowerCase().includes(budgetItemSearch.toLowerCase()));
+
+  const organizationAccountColumns: any[] = [
+    { title: 'Банк', dataIndex: 'bank_name', key: 'bank_name', width: 250 },
+    { title: 'Расчетный счет', dataIndex: 'account_number', key: 'account_number', width: 260 },
+    {
+      title: 'Статус',
+      dataIndex: 'is_active',
+      key: 'is_active',
+      width: 130,
+      render: (value: boolean) => (
+        <Tag color={value ? 'success' : 'default'}>{value ? 'Активный' : 'Неактивный'}</Tag>
+      ),
+    },
+  ];
+  if (canBalanceManage) {
+    organizationAccountColumns.push({
+      title: 'Действия',
+      key: 'actions',
+      width: 180,
+      align: 'center' as const,
+      render: (_: any, row: any) => (
+        <Space size="small">
+          {canBalanceManage && (
+            <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openEditBankAccount(row)}>
+              Изменить
+            </Button>
+          )}
+          {canDictDelete && (
+            <Popconfirm
+              title="Удалить расчетный счет?"
+              description={`${row.bank_name} · ${row.account_number}`}
+              okText="Удалить"
+              cancelText="Отмена"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => { void deleteBankAccount(row); }}
+            >
+              <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+                Удалить
+              </Button>
+            </Popconfirm>
+          )}
+        </Space>
+      ),
+    });
+  } else if (canDictDelete) {
+    organizationAccountColumns.push({
+      title: 'Действия',
+      key: 'actions',
+      width: 120,
+      align: 'center' as const,
+      render: (_: any, row: any) => (
+        <Popconfirm
+          title="Удалить расчетный счет?"
+          description={`${row.bank_name} · ${row.account_number}`}
+          okText="Удалить"
+          cancelText="Отмена"
+          okButtonProps={{ danger: true }}
+          onConfirm={() => { void deleteBankAccount(row); }}
+        >
+          <Button type="link" size="small" danger icon={<DeleteOutlined />}>
+            Удалить
+          </Button>
+        </Popconfirm>
+      ),
+    });
+  }
 
   const tabItems = [
     { key: 'orgs', label: (<span><BankOutlined /> Организации</span>), children: (
@@ -328,7 +549,16 @@ const OrganizationsPage: React.FC = () => {
           </Form.Item>
           <Form.Item name="payment_group_id" label="Группа оплаты" rules={[{ required: true }]}><Select options={paymentGroups.map(g => ({ value: g.id, label: g.name }))} /></Form.Item>
           <Form.Item name="cluster_id" label="Кластер"><Select options={clusters.map(c => ({ value: c.id, label: c.name }))} allowClear /></Form.Item>
-          <Form.Item name="director_id" label="Директор"><Select options={users.map(u => ({ value: u.id, label: u.full_name }))} allowClear showSearch filterOption={(input, option) => (option?.label ?? '').toString().toLowerCase().includes(input.toLowerCase())} /></Form.Item>
+          <Form.Item name="director_id" label="Директор">
+            <Select
+              options={userSelectOptions}
+              allowClear
+              showSearch
+              disabled={usersLookupUnavailable}
+              placeholder={usersLookupUnavailable ? 'Недоступно без права user_view' : undefined}
+              filterOption={(input, option) => (option?.label ?? '').toString().toLowerCase().includes(input.toLowerCase())}
+            />
+          </Form.Item>
           <Form.Item name="is_active" label="Активна" valuePropName="checked" initialValue={true}><Switch /></Form.Item>
         </Form>
       </Modal>
@@ -352,7 +582,16 @@ const OrganizationsPage: React.FC = () => {
       <Modal title="Кластер" open={isClusterModalOpen} onCancel={() => setIsClusterModalOpen(false)} onOk={() => clusterForm.submit()} okText="Сохранить" cancelText="Отменить" confirmLoading={loading} forceRender>
         <Form form={clusterForm} layout="vertical" onFinish={v => handleSave('/dict/clusters', v, editingCluster, setIsClusterModalOpen)}>
           <Form.Item name="name" label="Название" rules={[{ required: true }]}><Input /></Form.Item>
-          <Form.Item name="head_id" label="Руководитель"><Select options={users.map(u => ({ value: u.id, label: u.full_name }))} allowClear filterOption={(input, option) => (option?.label ?? '').toString().toLowerCase().includes(input.toLowerCase())}/></Form.Item>
+          <Form.Item name="head_id" label="Руководитель">
+            <Select
+              options={userSelectOptions}
+              allowClear
+              showSearch
+              disabled={usersLookupUnavailable}
+              placeholder={usersLookupUnavailable ? 'Недоступно без права user_view' : undefined}
+              filterOption={(input, option) => (option?.label ?? '').toString().toLowerCase().includes(input.toLowerCase())}
+            />
+          </Form.Item>
           <Form.Item name="is_active" label="Активен" valuePropName="checked" initialValue={true}><Switch /></Form.Item>
         </Form>
       </Modal>
@@ -371,6 +610,64 @@ const OrganizationsPage: React.FC = () => {
             <Select options={Object.entries(CATEGORY_CONFIG).map(([k, v]) => ({ value: k, label: <Tag color={v.color}>{v.label}</Tag> }))} />
           </Form.Item>
           <Form.Item name="is_active" label="Активна" valuePropName="checked" initialValue={true}>
+            <Switch />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={isOrgAccountsModalOpen}
+        title={`Расчетные счета: ${selectedOrganizationForAccounts?.name ?? ''}`}
+        onCancel={() => {
+          setIsOrgAccountsModalOpen(false);
+          setSelectedOrganizationForAccounts(null);
+          setOrganizationAccounts([]);
+        }}
+        footer={canBalanceManage
+          ? <Button type="primary" icon={<PlusOutlined />} onClick={openCreateBankAccount}>Добавить счет</Button>
+          : <Button onClick={() => setIsOrgAccountsModalOpen(false)}>Закрыть</Button>}
+        width="min(920px, calc(100vw - 96px))"
+        destroyOnHidden
+      >
+        <Table
+          rowKey="id"
+          dataSource={organizationAccounts}
+          loading={organizationAccountsLoading}
+          size="small"
+          pagination={false}
+          locale={{ emptyText: 'Расчетные счета не добавлены' }}
+          scroll={{ x: 700 }}
+          columns={organizationAccountColumns}
+        />
+      </Modal>
+
+      <Modal
+        open={isBankAccountModalOpen}
+        title={editingBankAccount ? 'Изменить расчетный счет' : 'Новый расчетный счет'}
+        onCancel={() => {
+          setIsBankAccountModalOpen(false);
+          setEditingBankAccount(null);
+        }}
+        onOk={() => bankAccountForm.submit()}
+        okText="Сохранить"
+        cancelText="Отменить"
+        confirmLoading={bankAccountSaving}
+        destroyOnHidden
+      >
+        <Form
+          key={editingBankAccount?.id ?? 'new-account'}
+          form={bankAccountForm}
+          layout="vertical"
+          onFinish={saveBankAccount}
+          initialValues={bankAccountFormInitialValues}
+        >
+          <Form.Item name="bank_name" label="Банк" rules={[{ required: true, message: 'Введите название банка' }]}>
+            <Input maxLength={255} />
+          </Form.Item>
+          <Form.Item name="account_number" label="Расчетный счет" rules={[{ required: true, message: 'Введите расчетный счет' }]}>
+            <Input maxLength={255} />
+          </Form.Item>
+          <Form.Item name="is_active" label="Активен" valuePropName="checked">
             <Switch />
           </Form.Item>
         </Form>

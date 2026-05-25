@@ -51,10 +51,14 @@ async def seed_rbac():
             {"name": "req_view_all", "label": "Просмотр всех заявок компании", "category": "5. Видимость"},
             {"name": "cashier_workspace_view", "label": "Рабочее пространство казначея", "category": "5. Видимость"},
             {"name": "req_export_excel", "label": "Выгрузка реестров в Excel", "category": "5. Видимость"},
+
+            # Остатки по счетам
+            {"name": "account_balance_view", "label": "Просмотр остатков по счетам", "category": "6. Остатки по счетам"},
+            {"name": "account_balance_manage", "label": "Ввод и правка остатков по счетам", "category": "6. Остатки по счетам"},
             
             # Календарь
-            {"name": "cal_view", "label": "Просмотр календаря", "category": "6. Календарь"},
-            {"name": "cal_manage", "label": "Управление календарем", "category": "6. Календарь"},
+            {"name": "cal_view", "label": "Просмотр календаря", "category": "7. Календарь"},
+            {"name": "cal_manage", "label": "Управление календарем", "category": "7. Календарь"},
         ]
 
         # Синхронизация прав с БД
@@ -91,6 +95,7 @@ async def seed_rbac():
         # Казначей (проведение оплат)
         await assign_permissions("CASHIER", [
             "req_pay", "cashier_workspace_view", "req_export_excel",
+            "account_balance_view", "account_balance_manage",
             "req_view_all", "req_view_own", "dict_view", "cal_view"
         ])
 
@@ -98,6 +103,7 @@ async def seed_rbac():
         await assign_permissions("FEO", [
             "req_view_all", "req_view_own", "req_approve", "req_edit_all",
             "gate_approve", "req_suspend", "cashier_workspace_view", "req_export_excel",
+            "account_balance_view",
             "dict_view", "dict_edit", "cal_view", "cal_manage"
         ])
 

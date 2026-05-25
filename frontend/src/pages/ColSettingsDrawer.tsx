@@ -110,7 +110,7 @@ const ColSettingsDrawer: React.FC<Props> = ({ open, onClose, settings, onChange,
       }
       open={open}
       onClose={onClose}
-      width={500}
+      size={500}
       footer={
         <Space style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <Button onClick={onClose}>Отмена</Button>

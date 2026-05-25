@@ -22,6 +22,10 @@ async def get_current_user(db: AsyncSession = Depends(get_db), token: str = Depe
         detail="Не удалось подтвердить личность",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    inactive_exception = HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Аккаунт заблокирован",
+    )
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         username: str = payload.get("sub")
@@ -40,6 +44,8 @@ async def get_current_user(db: AsyncSession = Depends(get_db), token: str = Depe
     
     if user is None:
         raise credentials_exception
+    if not getattr(user, "is_active", True):
+        raise inactive_exception
     return user
 
 # Наш универсальный защитник эндпоинтов
