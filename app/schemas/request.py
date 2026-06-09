@@ -92,6 +92,7 @@ class OcrPrefill(BaseModel):
     description: Optional[str] = None  # Назначение платежа
     note: Optional[str] = None         # Описание
     supplier_inn: Optional[str] = None
+    buyer_inn: Optional[str] = None      # ИНН покупателя — для подбора организации-плательщика
     payment_purpose_requirement: Optional[str] = None
     is_invoice: Optional[bool] = None
     confidence: Optional[float] = None

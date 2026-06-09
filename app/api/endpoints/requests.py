@@ -42,6 +42,34 @@ def _ensure_not_marked(req):
     if getattr(req, "is_marked_for_deletion", False):
         raise HTTPException(status_code=400, detail="Заявка помечена на удаление — действие недоступно. Снимите пометку, чтобы продолжить.")
 
+# Организационно-правовые формы (для нормализации имени контрагента)
+_LEGAL_FORMS = ("ООО", "ПАО", "ЗАО", "ОАО", "НАО", "АО", "ФГУП", "ГУП", "МУП", "АНО", "НКО", "ПК", "ИП")
+
+def _strip_quotes(text: str) -> str:
+    return text.strip().strip('«»""“”\'').strip()
+
+def _normalize_counterparty(name):
+    """Приводит контрагента к виду «Наименование ОПФ» (форма юрлица в конце),
+    убирает кавычки. Напр. 'ООО "Облачные технологии"' -> 'Облачные технологии ООО'.
+    Регистр и состав наименования сохраняются как в документе."""
+    if not name:
+        return name
+    s = " ".join(str(name).split()).strip()
+    up = s.upper()
+    # ОПФ в начале: '<ОПФ> ...' либо '<ОПФ>«...»'
+    for form in _LEGAL_FORMS:
+        if up.startswith(form):
+            rest = s[len(form):]
+            if rest[:1] in (" ", "«", '"', "“", "'"):
+                core = _strip_quotes(rest)
+                return f"{core} {form}".strip() if core else s
+    # ОПФ уже в конце: '... <ОПФ>'
+    for form in _LEGAL_FORMS:
+        if up.endswith(" " + form):
+            core = _strip_quotes(s[: -len(form)])
+            return f"{core} {form}".strip() if core else s
+    return _strip_quotes(s)
+
 SUBMIT_CUTOFF_HOUR = app_settings.SUBMIT_CUTOFF_HOUR  # До 11:00 МСК — обычный приём
 
 router = APIRouter()
@@ -411,6 +439,7 @@ async def ocr_recognize(
     rec = _section("recognition")
     invoice = _section("invoice")
     supplier = _section("supplier")
+    buyer = _section("buyer")
     totals = _section("totals")
     validation = _section("validation")
 
@@ -429,10 +458,11 @@ async def ocr_recognize(
 
     prefill = OcrPrefill(
         amount=amount,
-        counterparty=supplier.get("name"),
+        counterparty=_normalize_counterparty(supplier.get("name")),
         description=invoice.get("payment_purpose") or invoice.get("basis"),  # Назначение платежа
         note=invoice.get("summary") or invoice.get("basis"),                 # Описание
         supplier_inn=supplier.get("inn"),
+        buyer_inn=buyer.get("inn"),
         payment_purpose_requirement=invoice.get("payment_purpose_requirement"),
         is_invoice=is_invoice if isinstance(is_invoice, bool) else None,
         confidence=confidence,

@@ -78,6 +78,7 @@ type ContractStatus = boolean | null;
 type OrganizationRef = {
   id: string;
   name: string;
+  inn?: string | null;
 };
 
 type DirectionCategoryRef = {
@@ -830,6 +831,13 @@ const PaymentRegistry: React.FC = () => {
       if (prefill.counterparty != null) fieldsToSet.counterparty = prefill.counterparty;
       if (prefill.description != null) fieldsToSet.description = prefill.description;
       if (prefill.note != null) fieldsToSet.note = prefill.note;
+      // Организация-плательщик: подбираем по ИНН покупателя из счёта
+      if (prefill.buyer_inn) {
+        const digits = (s: unknown) => String(s ?? '').replace(/\D/g, '');
+        const buyerInn = digits(prefill.buyer_inn);
+        const match = organizations.find(o => o.inn && digits(o.inn) === buyerInn);
+        if (match) fieldsToSet.organization_id = match.id;
+      }
       if (Object.keys(fieldsToSet).length > 0) form.setFieldsValue(fieldsToSet);
 
       // Файл уже прикреплён пользователем в поле «Файл» — повторно не трогаем.
