@@ -14,8 +14,9 @@ from app.models.notification import Notification
 
 from app.api.deps import get_db, PermissionChecker
 from app.core.config import settings as app_settings
-from app.schemas.request import GatePreviewRequest, GatePreviewResponse, RequestCreate, RequestUpdate, RequestResponse, StatusUpdate
+from app.schemas.request import GatePreviewRequest, GatePreviewResponse, OcrPrefill, OcrRecognizeResponse, RequestCreate, RequestUpdate, RequestResponse, StatusUpdate
 from app.services import request_service
+from app.services import ocr_service
 from app.services.app_settings import get_storage_path
 from app.models.request import ApprovalStatus, PaymentStatus
 from app.models.budget import BudgetItem
@@ -361,6 +362,91 @@ async def upload_file(
 
     # Явно перезагружаем с relationships через selectinload
     return await request_service.get_request_by_id(db, request_id)
+
+
+@router.post("/ocr_recognize", response_model=OcrRecognizeResponse)
+async def ocr_recognize(
+    file: UploadFile = File(...),
+    current_user: User = Depends(PermissionChecker("req_create"))
+):
+    """Распознаёт загруженный счёт на оплату через evo-ai и возвращает поля
+    для предзаполнения формы заявки. Файл нигде не сохраняется."""
+    # Та же валидация загрузки, что и в upload_file.
+    allowed_extensions = set(app_settings.UPLOAD_ALLOWED_EXTENSIONS)
+    allowed_content_types = set(app_settings.UPLOAD_ALLOWED_CONTENT_TYPES)
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Неподдерживаемый формат файла. Разрешены: {', '.join(sorted(allowed_extensions))}",
+        )
+
+    content_type = (file.content_type or "").split(";")[0].strip().lower()
+    if content_type not in allowed_content_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Неподдерживаемый MIME/content-type файла. Разрешены: {', '.join(sorted(allowed_content_types))}",
+        )
+
+    contents = await file.read()
+    max_bytes = app_settings.UPLOAD_MAX_SIZE_MB * 1024 * 1024
+    if len(contents) > max_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Файл слишком большой. Максимальный размер: {app_settings.UPLOAD_MAX_SIZE_MB} МБ.",
+        )
+
+    try:
+        recognition = await ocr_service.recognize_invoice(
+            contents, file.filename or f"invoice{ext}", content_type
+        )
+    except ocr_service.OcrError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    # Защитный разбор распознанного JSON (структура может быть неполной).
+    def _section(name: str) -> dict:
+        value = recognition.get(name)
+        return value if isinstance(value, dict) else {}
+
+    rec = _section("recognition")
+    invoice = _section("invoice")
+    supplier = _section("supplier")
+    totals = _section("totals")
+    validation = _section("validation")
+
+    raw_amount = totals.get("total")
+    try:
+        amount = float(raw_amount) if raw_amount is not None else None
+    except (TypeError, ValueError):
+        amount = None
+
+    is_invoice = rec.get("is_invoice")
+    raw_confidence = rec.get("confidence")
+    try:
+        confidence = float(raw_confidence) if raw_confidence is not None else None
+    except (TypeError, ValueError):
+        confidence = None
+
+    prefill = OcrPrefill(
+        amount=amount,
+        counterparty=supplier.get("name"),
+        description=invoice.get("payment_purpose") or invoice.get("basis"),  # Назначение платежа
+        note=invoice.get("summary") or invoice.get("basis"),                 # Описание
+        supplier_inn=supplier.get("inn"),
+        payment_purpose_requirement=invoice.get("payment_purpose_requirement"),
+        is_invoice=is_invoice if isinstance(is_invoice, bool) else None,
+        confidence=confidence,
+    )
+
+    warnings: list[str] = []
+    if is_invoice is False:
+        warnings.append("Документ не распознан как счёт на оплату")
+    if amount is None:
+        warnings.append("Не удалось извлечь сумму")
+    if validation.get("totals_match") is False:
+        warnings.append("Контрольные суммы не сошлись")
+
+    return OcrRecognizeResponse(prefill=prefill, warnings=warnings, raw=recognition)
 
 
 @router.get("/{request_id}/file")

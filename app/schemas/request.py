@@ -79,6 +79,29 @@ class GatePreviewResponse(BaseModel):
     reasons: list[str] = Field(default_factory=list)
 
 
+# --- OCR (распознавание счёта) ---
+
+class OcrPrefill(BaseModel):
+    """Поля для предзаполнения формы заявки из распознанного счёта.
+
+    Сумма умышленно передаётся как float — это подсказка для формы, она не
+    сохраняется (хранимая сумма заявки — Decimal в RequestCreate).
+    """
+    amount: Optional[float] = None
+    counterparty: Optional[str] = None
+    description: Optional[str] = None  # Назначение платежа
+    note: Optional[str] = None         # Описание
+    supplier_inn: Optional[str] = None
+    payment_purpose_requirement: Optional[str] = None
+    is_invoice: Optional[bool] = None
+    confidence: Optional[float] = None
+
+class OcrRecognizeResponse(BaseModel):
+    prefill: OcrPrefill
+    warnings: list[str] = Field(default_factory=list)
+    raw: dict = Field(default_factory=dict)
+
+
 # --- Ответная схема ---
 
 class RequestResponse(BaseModel):

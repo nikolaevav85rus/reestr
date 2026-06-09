@@ -43,6 +43,13 @@ class Settings(BaseSettings):
         ]
     )
 
+    # Распознавание счетов через платформу evo-ai (Dify-совместимый API).
+    # Пустой EVOAI_API_KEY отключает OCR (эндпоинт вернёт 503).
+    EVOAI_API_KEY: str = ""
+    EVOAI_BASE_URL: str = "https://api.evo-ai.ru/v1"
+    EVOAI_USER: str = "reestr"
+    EVOAI_TIMEOUT_SEC: int = 180
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, value):
