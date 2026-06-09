@@ -20,7 +20,7 @@ interface AuthState {
 
 export const useAuthStore = create<AuthState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       token: null,
       user: null,
       permissions: [],
@@ -34,9 +34,24 @@ export const useAuthStore = create<AuthState>()(
       }),
 
       logout: () => {
-        // Очищаем всё при выходе
-        localStorage.removeItem('token');
-        localStorage.removeItem('treasury-auth-storage');
+        // Best-effort серверная ревокация: говорим бэкенду инкрементировать
+        // token_version (это отзывает текущую и все прочие сессии пользователя).
+        // Используем fetch напрямую, чтобы не создавать цикл импорта с apiClient,
+        // и не дожидаемся ответа — локальный стейт чистим в любом случае.
+        const token = get().token;
+        if (token) {
+          try {
+            fetch('/api/v1/auth/logout', {
+              method: 'POST',
+              headers: { Authorization: `Bearer ${token}` },
+              keepalive: true,
+            }).catch(() => {});
+          } catch {
+            // Игнорируем любые сбои сети — выход не должен блокироваться.
+          }
+        }
+
+        // Чистим единый источник правды (persist сам уберёт ключ из localStorage).
         set({ token: null, user: null, permissions: [], isAuth: false });
       },
     }),

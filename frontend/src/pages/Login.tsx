@@ -78,7 +78,6 @@ const LoginPage: React.FC = () => {
       };
 
       setAuth(access_token, userData, permissions || []);
-      localStorage.setItem('token', access_token);
 
       messageApi.success(`Добро пожаловать, ${user.full_name}!`);
       navigate('/dashboard');

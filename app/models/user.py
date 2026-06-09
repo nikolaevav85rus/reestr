@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, ForeignKey, Table, Boolean, DateTime, func
+from sqlalchemy import Column, String, ForeignKey, Table, Boolean, DateTime, Integer, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.db.database import Base
@@ -54,7 +54,10 @@ class User(Base):
     full_name = Column(String, nullable=False)
     hashed_password = Column(String, nullable=False)
     is_active = Column(Boolean, default=True)
-    
+    # Версия токена: при инкременте все ранее выданные JWT этого пользователя
+    # становятся недействительными (серверная ревокация сессий).
+    token_version = Column(Integer, nullable=False, default=0, server_default="0")
+
     role_id = Column(UUID(as_uuid=True), ForeignKey("roles.id"))
     direction_id = Column(UUID(as_uuid=True), ForeignKey("directions.id"), nullable=True)
 

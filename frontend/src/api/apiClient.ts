@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { useAuthStore } from '../store/authStore';
 
 // Запросы идут через Vite proxy — без CORS
 const API_BASE_URL = `/api/v1`;
@@ -10,9 +11,11 @@ const apiClient = axios.create({
   },
 });
 
-// Перехватчик запросов: добавляем JWT токен, если он есть
+// Перехватчик запросов: добавляем JWT токен из единого источника правды —
+// zustand-стора. getState() читаем лениво (внутри перехватчика), чтобы
+// избежать проблем с порядком инициализации модулей.
 apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token');
+  const token = useAuthStore.getState().token;
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -26,10 +29,9 @@ apiClient.interceptors.response.use(
     const requestUrl = error.config?.url ?? '';
     const isLoginRequest = requestUrl.includes('/auth/login');
 
-    // Если 401 — разлогиниваем
+    // Если 401 — разлогиниваем (токен отозван/истёк): чистим стор и уходим на /login.
     if (error.response?.status === 401 && !isLoginRequest) {
-      localStorage.removeItem('token');
-      localStorage.removeItem('treasury-auth-storage');
+      useAuthStore.getState().logout();
       window.location.href = '/login';
     }
     return Promise.reject(error);

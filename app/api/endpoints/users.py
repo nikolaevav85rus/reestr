@@ -188,6 +188,10 @@ async def update_user(
     # Смена роли: проверка существования + защита от эскалации привилегий.
     if 'role_id' in update_data and update_data['role_id'] is not None:
         await _resolve_role_or_403(db, update_data['role_id'], current_user)
+        # Смена роли — событие безопасности: отзываем старые токены пользователя,
+        # но только если роль действительно поменялась.
+        if str(update_data['role_id']) != str(user.role_id):
+            user.token_version = (user.token_version or 0) + 1
         user.role_id = update_data['role_id']
 
     # ЦФО: None допустимо (открепление), иначе проверяем существование.
@@ -252,6 +256,8 @@ async def update_password(
         raise HTTPException(status_code=404, detail="Пользователь не найден")
 
     user.hashed_password = get_password_hash(data.password)
+    # Смена пароля — событие безопасности: отзываем все старые сессии пользователя.
+    user.token_version = (user.token_version or 0) + 1
     await db.commit()
     return {"status": "success"}
 

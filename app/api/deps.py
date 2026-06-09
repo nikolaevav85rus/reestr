@@ -29,7 +29,8 @@ async def get_current_user(db: AsyncSession = Depends(get_db), token: str = Depe
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         username: str = payload.get("sub")
-        if username is None:
+        token_ver = payload.get("ver")
+        if username is None or token_ver is None:
             raise credentials_exception
     except JWTError:
         raise credentials_exception
@@ -43,6 +44,10 @@ async def get_current_user(db: AsyncSession = Depends(get_db), token: str = Depe
     user = result.scalar_one_or_none()
     
     if user is None:
+        raise credentials_exception
+    # Серверная ревокация: версия в токене должна совпадать с текущей версией
+    # пользователя. Несовпадение => токен отозван (logout / смена роли / пароля).
+    if token_ver != getattr(user, "token_version", 0):
         raise credentials_exception
     if not getattr(user, "is_active", True):
         raise inactive_exception

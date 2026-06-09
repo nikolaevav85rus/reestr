@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_db
+from app.api.deps import get_db, get_current_user
 from app.core import security
 from app.models.user import User, Role
 from app.schemas.token import LoginResponse
@@ -36,7 +36,9 @@ async def login_for_access_token(
         if getattr(user.role, "is_superadmin", False):
             permissions_list.append("superadmin")
 
-    access_token = security.create_access_token(data={"sub": user.ad_login})
+    access_token = security.create_access_token(
+        data={"sub": user.ad_login, "ver": user.token_version}
+    )
     
     return {
         "access_token": access_token,
@@ -44,3 +46,20 @@ async def login_for_access_token(
         "user": user,
         "permissions": permissions_list
     }
+
+
+@router.post("/logout")
+async def logout(
+    current_user: User = Depends(get_current_user),
+):
+    """Выход из системы.
+
+    Портал работает только внутри корпоративной сети, поэтому logout очищает
+    клиентское состояние, а токен истекает по TTL — без серверной ревокации.
+    Намеренно НЕ инкрементируем token_version: bump на logout убивал бы сразу
+    ВСЕ сессии пользователя (на всех устройствах), что слишком грубо.
+    token_version используется только для обязательной ревокации при смене
+    пароля и роли (см. users.py). Точечная ревокация одной сессии (jti
+    denylist) — задел на будущее.
+    """
+    return {"ok": True}
