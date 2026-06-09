@@ -5,13 +5,18 @@ import {
 } from 'antd';
 import {
   UserAddOutlined, TeamOutlined, SearchOutlined, EditOutlined, SafetyCertificateOutlined,
-  PlusOutlined, DeleteOutlined, KeyOutlined
+  PlusOutlined, DeleteOutlined, KeyOutlined, BankOutlined
 } from '@ant-design/icons';
 import apiClient from '../api/apiClient';
 import HasPermission from '../components/HasPermission';
 import { getErrorMessage } from '../utils/errorMessage';
 
 const { Title, Text } = Typography;
+
+type OrganizationRef = {
+  id: string;
+  name: string;
+};
 
 const UsersPage: React.FC = () => {
   const [users, setUsers] = useState<any[]>([]);
@@ -30,6 +35,12 @@ const UsersPage: React.FC = () => {
   const [isRoleModalOpen, setIsRoleModalOpen] = useState(false);
   const [isRoleEditModalOpen, setIsRoleEditModalOpen] = useState(false);
   const [isNewRoleModalOpen, setIsNewRoleModalOpen] = useState(false);
+  const [isOrgsModalOpen, setIsOrgsModalOpen] = useState(false);
+
+  const [orgsList, setOrgsList] = useState<OrganizationRef[]>([]);
+  const [selectedOrgIds, setSelectedOrgIds] = useState<string[]>([]);
+  const [orgsLoading, setOrgsLoading] = useState(false);
+  const [orgsSaving, setOrgsSaving] = useState(false);
 
   const [selectedUser, setSelectedUser] = useState<any>(null);
   const [selectedRole, setSelectedRole] = useState<any>(null);
@@ -100,6 +111,38 @@ const UsersPage: React.FC = () => {
     }
   };
 
+  const handleManageOrgs = async (record: any) => {
+    setSelectedUser(record);
+    setIsOrgsModalOpen(true);
+    setOrgsLoading(true);
+    try {
+      const [assigned, all] = await Promise.all([
+        apiClient.get<OrganizationRef[]>(`/users/${record.id}/organizations`),
+        apiClient.get<OrganizationRef[]>('/dict/organizations'),
+      ]);
+      setOrgsList(all.data ?? []);
+      setSelectedOrgIds((assigned.data ?? []).map((o) => o.id));
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка при загрузке организаций'));
+    } finally {
+      setOrgsLoading(false);
+    }
+  };
+
+  const onSaveOrgs = async () => {
+    if (!selectedUser) return;
+    setOrgsSaving(true);
+    try {
+      await apiClient.put<OrganizationRef[]>(`/users/${selectedUser.id}/organizations`, { organization_ids: selectedOrgIds });
+      messageApi.success('Организации пользователя сохранены');
+      setIsOrgsModalOpen(false);
+    } catch (error: unknown) {
+      messageApi.error(getErrorMessage(error, 'Ошибка при сохранении организаций'));
+    } finally {
+      setOrgsSaving(false);
+    }
+  };
+
   const getColumnSearchProps = (dataIndex: string) => ({
     filterDropdown: ({ setSelectedKeys, selectedKeys, confirm, clearFilters }: any) => (
       <div style={{ padding: 8 }} onKeyDown={e => e.stopPropagation()}>
@@ -147,6 +190,7 @@ const UsersPage: React.FC = () => {
     { title: 'Действия', width: 100, align: 'center' as const, render: (_: any, r: any) => (
       <Space size="small">
         <HasPermission permission="user_edit"><Button type="text" size="small" icon={<EditOutlined />} onClick={() => handleEditUser(r)} /></HasPermission>
+        <HasPermission permission="user_edit"><Button type="text" size="small" title="Организации пользователя" icon={<BankOutlined />} onClick={() => handleManageOrgs(r)} /></HasPermission>
         <HasPermission permission="user_delete">
           <Popconfirm title="Удалить сотрудника?" onConfirm={() => handleDeleteUser(r.id)}><Button type="text" size="small" danger icon={<DeleteOutlined />} /></Popconfirm>
         </HasPermission>
@@ -286,6 +330,41 @@ const UsersPage: React.FC = () => {
           <Form.Item name="name" label="Код роли" rules={[{ required: true }]}><Input placeholder="manager" /></Form.Item>
           <Form.Item name="label" label="Отображение" rules={[{ required: true }]}><Input placeholder="Менеджер" /></Form.Item>
           <Form.Item name="color" label="Цвет"><Input placeholder="blue" /></Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title="Организации пользователя"
+        open={isOrgsModalOpen}
+        onCancel={() => setIsOrgsModalOpen(false)}
+        onOk={onSaveOrgs}
+        okText="Сохранить"
+        cancelText="Отменить"
+        confirmLoading={orgsSaving}
+        okButtonProps={{ disabled: orgsLoading }}
+        forceRender
+        destroyOnHidden
+      >
+        <div style={{ marginBottom: 16 }}><Text type="secondary">Пользователь: <b>{selectedUser?.full_name}</b></Text></div>
+        <Form layout="vertical">
+          <Form.Item
+            label="Организации пользователя"
+            help="Доступ к остаткам на утро ограничен выбранными организациями"
+          >
+            <Select<string[]>
+              mode="multiple"
+              allowClear
+              showSearch
+              loading={orgsLoading}
+              disabled={orgsLoading}
+              placeholder={orgsList.length ? 'Выберите организации...' : 'Нет доступных организаций'}
+              value={selectedOrgIds}
+              onChange={(value) => setSelectedOrgIds(value)}
+              optionFilterProp="label"
+              options={orgsList.map((o) => ({ value: o.id, label: o.name }))}
+              style={{ width: '100%' }}
+            />
+          </Form.Item>
         </Form>
       </Modal>
     </div>
