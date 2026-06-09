@@ -136,10 +136,38 @@ async def get_request_by_id(db: AsyncSession, request_id: UUID) -> Optional[Paym
     )
     return result.scalars().first()
 
+
+# Допустимые исходные статусы для целевого статуса при согласовании.
+# Применяется ко всем (включая суперадмина): недопустимые переходы состояний невозможны.
+ALLOWED_FROM = {
+    ApprovalStatus.APPROVED:      {ApprovalStatus.PENDING},
+    ApprovalStatus.REJECTED:      {ApprovalStatus.PENDING, ApprovalStatus.CLARIFICATION},
+    ApprovalStatus.CLARIFICATION: {ApprovalStatus.PENDING},
+}
+
+
+async def _lock_request_for_update(db: AsyncSession, request_id: UUID) -> PaymentRequest:
+    """Загружает базовую строку PaymentRequest с блокировкой FOR UPDATE на время транзакции.
+
+    Без selectinload — чтобы не было проблем FOR UPDATE + outer join.
+    Бросает 404, если строки нет.
+    """
+    result = await db.execute(
+        select(PaymentRequest)
+        .where(PaymentRequest.id == request_id)
+        .with_for_update()
+    )
+    locked = result.scalars().first()
+    if not locked:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    return locked
+
 async def update_request(db: AsyncSession, request_id: UUID, data: RequestUpdate, user_id: UUID, bypass_owner: bool = False) -> PaymentRequest:
     req = await get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    if req.is_marked_for_deletion:
+        raise HTTPException(status_code=400, detail="Заявка помечена на удаление — действие недоступно.")
     if req.approval_status != ApprovalStatus.DRAFT:
         raise HTTPException(status_code=400, detail="Редактировать можно только черновики")
     if not bypass_owner and req.creator_id != user_id:
@@ -176,18 +204,34 @@ async def update_request_status(
     current_user: Optional[User] = None,
 ) -> PaymentRequest:
     """"""
+    # Блокируем строку на время транзакции (защита от гонок двойной обработки).
+    await _lock_request_for_update(db, request_id)
     req = await get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    if req.is_marked_for_deletion:
+        raise HTTPException(status_code=400, detail="Заявка помечена на удаление — действие недоступно.")
     old_status = req.approval_status
+    # Защита по исходному статусу: запрещаем недопустимые переходы состояний
+    # (например, согласовать DRAFT в обход шлюза или повторно согласовать PAID/REJECTED).
+    allowed_sources = ALLOWED_FROM.get(status)
+    if allowed_sources is not None and old_status not in allowed_sources:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Недопустимый переход из статуса «{old_status}» в «{status}»",
+        )
     req.approval_status = status
     if reason:
         req.rejection_reason = reason
     db.add(AuditLog(
+        user_id=current_user.id if current_user else None,
         entity_name="PaymentRequest",
         entity_id=req.id,
         action="UPDATE_APPROVAL",
-        changes={"old": old_status, "new": status}
+        changes={
+            "old": old_status.value if isinstance(old_status, ApprovalStatus) else str(old_status),
+            "new": status.value if isinstance(status, ApprovalStatus) else str(status),
+        }
     ))
 
     # Уведомления инициатору при изменении статуса
@@ -214,9 +258,14 @@ async def update_payment_status(
     current_user: Optional[User] = None,
 ) -> PaymentRequest:
     """"""
+    # Блокируем строку на время транзакции (защита от гонок: два кассира оплачивают одну заявку).
+    await _lock_request_for_update(db, request_id)
     req = await get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    if req.is_marked_for_deletion:
+        raise HTTPException(status_code=400, detail="Заявка помечена на удаление — действие недоступно.")
+    # Повторная проверка под блокировкой.
     if req.payment_status == PaymentStatus.PAID:
         raise HTTPException(status_code=400, detail="Заявка уже оплачена")
     if req.approval_status != ApprovalStatus.APPROVED:
@@ -224,10 +273,14 @@ async def update_payment_status(
     old_status = req.payment_status
     req.payment_status = status
     db.add(AuditLog(
+        user_id=current_user.id if current_user else None,
         entity_name="PaymentRequest",
         entity_id=req.id,
         action="UPDATE_PAYMENT",
-        changes={"old": old_status, "new": status}
+        changes={
+            "old": old_status.value if isinstance(old_status, PaymentStatus) else str(old_status),
+            "new": status.value if isinstance(status, PaymentStatus) else str(status),
+        }
     ))
     if status == PaymentStatus.PAID:
         actor = f" ({current_user.full_name})" if current_user else ""
@@ -243,9 +296,21 @@ async def update_payment_status(
 
 async def get_stats(db: AsyncSession) -> dict:
     """"""
-    total = await db.execute(select(func.count(PaymentRequest.id)))
-    approved = await db.execute(select(func.count(PaymentRequest.id)).where(PaymentRequest.approval_status == ApprovalStatus.APPROVED))
-    paid = await db.execute(select(func.count(PaymentRequest.id)).where(PaymentRequest.payment_status == PaymentStatus.PAID))
+    total = await db.execute(
+        select(func.count(PaymentRequest.id)).where(PaymentRequest.is_marked_for_deletion == False)
+    )
+    approved = await db.execute(
+        select(func.count(PaymentRequest.id)).where(
+            PaymentRequest.approval_status == ApprovalStatus.APPROVED,
+            PaymentRequest.is_marked_for_deletion == False,
+        )
+    )
+    paid = await db.execute(
+        select(func.count(PaymentRequest.id)).where(
+            PaymentRequest.payment_status == PaymentStatus.PAID,
+            PaymentRequest.is_marked_for_deletion == False,
+        )
+    )
     return {
         "total_requests": total.scalar() or 0,
         "approved_requests": approved.scalar() or 0,

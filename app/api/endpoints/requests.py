@@ -37,6 +37,10 @@ def has_perm(user: User, perm: str) -> bool:
 def request_title(req) -> str:
     return f"Заявка № {req.request_number or str(req.id)[:8].upper()}"
 
+def _ensure_not_marked(req):
+    if getattr(req, "is_marked_for_deletion", False):
+        raise HTTPException(status_code=400, detail="Заявка помечена на удаление — действие недоступно. Снимите пометку, чтобы продолжить.")
+
 SUBMIT_CUTOFF_HOUR = app_settings.SUBMIT_CUTOFF_HOUR  # До 11:00 МСК — обычный приём
 
 router = APIRouter()
@@ -248,6 +252,7 @@ async def submit_request(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     if req.creator_id != current_user.id and not has_perm(current_user, "req_edit_all"):
         raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
 
@@ -303,6 +308,7 @@ async def upload_file(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     if req.creator_id != current_user.id and not getattr(current_user, 'is_superadmin', False):
         raise HTTPException(status_code=403, detail="Нельзя загружать файл к чужой заявке")
 
@@ -375,6 +381,7 @@ async def approve_gate(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     if req.approval_status != ApprovalStatus.PENDING_GATE:
         raise HTTPException(status_code=400, detail="Заявка не ожидает разрешения шлюза")
     req.approval_status = ApprovalStatus.PENDING
@@ -395,6 +402,7 @@ async def reject_gate(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     if req.approval_status != ApprovalStatus.PENDING_GATE:
         raise HTTPException(status_code=400, detail="Заявка не ожидает разрешения шлюза")
     req.approval_status = ApprovalStatus.REJECTED
@@ -418,6 +426,7 @@ async def set_contract_status(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     req.contract_status = data.get("contract_status", req.contract_status)
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
@@ -432,6 +441,7 @@ async def approve_memo(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     if req.approval_status != ApprovalStatus.PENDING_MEMO:
         raise HTTPException(status_code=400, detail="Заявка не ожидает согласования по бюджету")
     req.approval_status = ApprovalStatus.PENDING
@@ -449,6 +459,7 @@ async def reject_memo(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     if req.approval_status != ApprovalStatus.PENDING_MEMO:
         raise HTTPException(status_code=400, detail="Заявка не ожидает согласования по бюджету")
     req.approval_status = ApprovalStatus.REJECTED
@@ -472,6 +483,7 @@ async def memo_reason(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     if req.creator_id != current_user.id and not has_perm(current_user, "req_edit_all"):
         raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
     if req.approval_status != ApprovalStatus.MEMO_REQUIRED:
@@ -499,6 +511,7 @@ async def cancel_memo(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     if req.creator_id != current_user.id and not has_perm(current_user, "req_edit_all"):
         raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
     if req.approval_status != ApprovalStatus.MEMO_REQUIRED:
@@ -525,6 +538,7 @@ async def move_to_draft(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     if req.creator_id != current_user.id and not has_perm(current_user, "req_edit_all"):
         raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
     allowed = {ApprovalStatus.MEMO_REQUIRED, ApprovalStatus.PENDING_MEMO, ApprovalStatus.POSTPONED}
@@ -557,6 +571,7 @@ async def set_budget_status(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     new_value = data.get("is_budgeted", req.is_budgeted)
     req.is_budgeted = new_value
     # Если ФЭО явно выставляет «Нет» и заявка на согласовании — сначала запрашиваем обоснование у инициатора
@@ -585,6 +600,7 @@ async def set_special_order(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     req.special_order = data.get("special_order", req.special_order)
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
@@ -599,6 +615,7 @@ async def suspend_request(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     if req.approval_status not in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}:
         raise HTTPException(status_code=400, detail="Отложить можно только заявку на согласовании или согласованную заявку")
     req.approval_status = ApprovalStatus.SUSPENDED
@@ -623,6 +640,7 @@ async def unsuspend_request(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     if req.approval_status != ApprovalStatus.SUSPENDED:
         raise HTTPException(status_code=400, detail="Заявка не отложена")
     from datetime import date as date_type
@@ -668,6 +686,42 @@ async def get_request_history(
     ]
 
 
+@router.get("/{request_id}/audit")
+async def get_request_audit(
+    request_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(PermissionChecker("req_view_own")),
+):
+    """Журнал аудита по заявке (записи AuditLog с резолвом ФИО автора)."""
+    res = await db.execute(
+        select(AuditLog)
+        .where(AuditLog.entity_name == "PaymentRequest")
+        .where(AuditLog.entity_id == request_id)
+        .order_by(AuditLog.timestamp.asc())
+    )
+    logs = res.scalars().all()
+
+    # Резолвим ФИО автора одним запросом по уникальным user_id (без N+1)
+    user_ids = {log.user_id for log in logs if log.user_id is not None}
+    names_by_id: dict = {}
+    if user_ids:
+        users_res = await db.execute(
+            select(User.id, User.full_name).where(User.id.in_(user_ids))
+        )
+        names_by_id = {uid: full_name for uid, full_name in users_res.all()}
+
+    return [
+        {
+            "id": str(log.id),
+            "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+            "action": log.action,
+            "actor": names_by_id.get(log.user_id) if log.user_id else None,
+            "changes": log.changes,
+        }
+        for log in logs
+    ]
+
+
 @router.post("/{request_id}/approve", response_model=RequestResponse)
 async def approve_request(
     request_id: UUID,
@@ -705,6 +759,7 @@ async def postpone_request(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    _ensure_not_marked(req)
     old_date = req.payment_date
     if body.payment_date:
         req.payment_date = date_type.fromisoformat(body.payment_date)
