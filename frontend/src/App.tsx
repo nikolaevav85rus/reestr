@@ -114,7 +114,14 @@ const NotificationBell: React.FC = () => {
       placement="bottomRight"
       popupRender={(menu) => (
         <div style={{ width: 360, background: '#fff', borderRadius: 8, boxShadow: '0 6px 16px rgba(0,0,0,0.12)' }}>
-          <div style={{ maxHeight: 400, overflowY: 'auto' }}>{menu}</div>
+          <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+            {/* AntD v6 .ant-dropdown-menu-root has its own max-height+overflow;
+                disable it so only this wrapper scrolls (no double scrollbar). */}
+            {React.cloneElement(
+              menu as React.ReactElement<{ style?: React.CSSProperties }>,
+              { style: { maxHeight: 'none', overflowY: 'visible', boxShadow: 'none' } },
+            )}
+          </div>
           <div style={{ borderTop: '1px solid #f0f0f0', padding: '8px 12px', textAlign: 'center' }}>
             <Button
               type="link"
