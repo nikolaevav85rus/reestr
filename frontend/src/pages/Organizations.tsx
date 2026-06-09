@@ -271,6 +271,11 @@ const OrganizationsPage: React.FC = () => {
       render: (t: string) => <b>{t}</b>
     },
     {
+      title: 'ИНН', dataIndex: 'inn', width: 140,
+      ...getColumnSearchProps('inn'),
+      render: (v: string) => v || '—'
+    },
+    {
       title: 'Группа оплаты',
       filters: paymentGroups.map(g => ({ text: g.name, value: g.id })),
       onFilter: (value: any, record: any) => record.payment_group_id === value,
@@ -546,6 +551,9 @@ const OrganizationsPage: React.FC = () => {
           <Form.Item name="name" label="Название" rules={[{ required: true }]}><Input /></Form.Item>
           <Form.Item name="prefix" label="Префикс заявок" extra="Например: АИ, МП, СМ (до 10 символов)">
             <Input maxLength={10} style={{ width: 140 }} />
+          </Form.Item>
+          <Form.Item name="inn" label="ИНН" extra="10 или 12 цифр" rules={[{ pattern: /^\d{10}(\d{2})?$/, message: 'ИНН должен содержать 10 или 12 цифр' }]}>
+            <Input maxLength={12} style={{ width: 200 }} />
           </Form.Item>
           <Form.Item name="payment_group_id" label="Группа оплаты" rules={[{ required: true }]}><Select options={paymentGroups.map(g => ({ value: g.id, label: g.name }))} /></Form.Item>
           <Form.Item name="cluster_id" label="Кластер"><Select options={clusters.map(c => ({ value: c.id, label: c.name }))} allowClear /></Form.Item>
