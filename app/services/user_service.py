@@ -5,9 +5,32 @@ from fastapi import HTTPException, status
 from uuid import UUID
 from typing import Optional
 
-from app.models.user import User, Role
+from app.models.user import User, Role, user_organizations
 from app.schemas.user import UserCreate, UserUpdate, UserPasswordUpdate
 from app.core.security import get_password_hash
+
+
+def user_is_superadmin(user: User) -> bool:
+    """True, если пользователь обладает ролью суперадминистратора (God Mode)."""
+    return bool(user.role and getattr(user.role, "is_superadmin", False))
+
+
+async def allowed_balance_org_ids(db: AsyncSession, user: User) -> Optional[set[UUID]]:
+    """Множество организаций, к остаткам которых у пользователя есть доступ.
+
+    Возвращает None, если пользователь — суперадмин (доступ ко ВСЕМ организациям).
+    Иначе возвращает set из organization_id, явно назначенных пользователю через
+    таблицу user_organizations (может быть пустым множеством — тогда доступа нет).
+    """
+    if user_is_superadmin(user):
+        return None
+
+    result = await db.execute(
+        select(user_organizations.c.organization_id).where(
+            user_organizations.c.user_id == user.id
+        )
+    )
+    return {row[0] for row in result.all()}
 
 async def create_user(db: AsyncSession, user_in: UserCreate):
     """Создает нового пользователя."""

@@ -12,6 +12,16 @@ role_permissions = Table(
     Column("permission_id", UUID(as_uuid=True), ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True),
 )
 
+# Явная привязка пользователя к организациям (Many-to-Many).
+# Управляет видимостью/правкой остатков на счетах: не-суперадмин видит и
+# редактирует остатки только по назначенным ему организациям.
+user_organizations = Table(
+    "user_organizations",
+    Base.metadata,
+    Column("user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+    Column("organization_id", UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True),
+)
+
 class Permission(Base):
     __tablename__ = "permissions"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -63,3 +73,9 @@ class User(Base):
 
     role = relationship("Role", back_populates="users", lazy="selectin")
     direction = relationship("Direction", lazy="selectin")
+    # Организации, к остаткам которых пользователь имеет доступ (явная привязка).
+    organizations = relationship(
+        "Organization",
+        secondary=user_organizations,
+        lazy="selectin",
+    )

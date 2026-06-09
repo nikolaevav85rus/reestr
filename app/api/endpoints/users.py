@@ -14,6 +14,8 @@ from app.schemas.user import (
     UserUpdate,
     UserActiveUpdate,
     UserPasswordUpdate,
+    UserOrganizationsUpdate,
+    OrganizationBrief,
 )
 from app.core.security import get_password_hash # Предполагается, что у вас есть функция хеширования
 
@@ -260,6 +262,68 @@ async def update_password(
     user.token_version = (user.token_version or 0) + 1
     await db.commit()
     return {"status": "success"}
+
+@router.get("/{user_id}/organizations", response_model=List[OrganizationBrief])
+async def get_user_organizations(
+    user_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(PermissionChecker("user_edit")),
+):
+    """Список организаций, назначенных пользователю (скоуп доступа к остаткам)."""
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.organizations))
+        .where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    return sorted(user.organizations, key=lambda org: org.name)
+
+
+@router.put("/{user_id}/organizations", response_model=List[OrganizationBrief])
+async def set_user_organizations(
+    user_id: UUID,
+    data: UserOrganizationsUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(PermissionChecker("user_edit")),
+):
+    """Полностью заменяет набор организаций, назначенных пользователю.
+
+    Каждый organization_id валидируется на существование (404 при неверном id).
+    Возвращает актуальный список привязок.
+    """
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.organizations))
+        .where(User.id == user_id)
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    # Дедупликация переданных id с сохранением проверки существования.
+    requested_ids = list(dict.fromkeys(data.organization_ids))
+    organizations: List[Organization] = []
+    if requested_ids:
+        found = await db.execute(
+            select(Organization).where(Organization.id.in_(requested_ids))
+        )
+        organizations = found.scalars().all()
+        found_ids = {org.id for org in organizations}
+        missing = [str(oid) for oid in requested_ids if oid not in found_ids]
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Организация не найдена: {', '.join(missing)}",
+            )
+
+    user.organizations = organizations
+    await db.commit()
+
+    return sorted(organizations, key=lambda org: org.name)
+
 
 @router.delete("/{user_id}")
 async def delete_user(

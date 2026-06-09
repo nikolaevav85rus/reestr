@@ -86,6 +86,22 @@ class RolePermissionsUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
     permissions: list[str] = []
 
+class UserOrganizationsUpdate(BaseModel):
+    """Замена набора организаций, назначенных пользователю (whitelist).
+
+    Используется для скоупинга доступа к остаткам на счетах:
+    PUT /users/{id}/organizations с телом {"organization_ids": ["<uuid>", ...]}.
+    """
+    model_config = ConfigDict(extra="ignore")
+    organization_ids: list[UUID] = []
+
+class OrganizationBrief(BaseModel):
+    """Краткое представление организации для ответа со списком привязок."""
+    id: UUID
+    name: str
+
+    model_config = ConfigDict(from_attributes=True)
+
 class UserResponse(UserBase):
     id: UUID
     direction_id: Optional[UUID] = None

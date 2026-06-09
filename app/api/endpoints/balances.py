@@ -20,9 +20,24 @@ from app.schemas.balance import (
     DailyAccountBalanceUpdate,
     DailyAccountBalanceUpsert,
 )
+from app.services.user_service import allowed_balance_org_ids
 
 router = APIRouter()
 DAILY_BALANCE_CONFLICT_DETAIL = "Остаток на указанную дату и расчетный счет уже существует"
+BALANCE_ORG_FORBIDDEN_DETAIL = "Нет доступа к остаткам этой организации"
+
+
+async def _assert_org_allowed(db: AsyncSession, user: User, organization_id: UUID) -> None:
+    """Проверяет, что целевая организация входит в доступные пользователю.
+
+    Суперадмин (allowed is None) проходит без ограничений. Для остальных —
+    403, если organization_id не назначен пользователю.
+    """
+    allowed = await allowed_balance_org_ids(db, user)
+    if allowed is None:
+        return
+    if organization_id not in allowed:
+        raise HTTPException(status_code=403, detail=BALANCE_ORG_FORBIDDEN_DETAIL)
 
 
 async def _ensure_organization_exists(db: AsyncSession, organization_id: UUID) -> None:
@@ -66,6 +81,10 @@ async def get_bank_accounts(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("account_balance_view")),
 ):
+    allowed = await allowed_balance_org_ids(db, current_user)
+    if organization_id and allowed is not None and organization_id not in allowed:
+        raise HTTPException(status_code=403, detail=BALANCE_ORG_FORBIDDEN_DETAIL)
+
     stmt = (
         select(BankAccount)
         .options(selectinload(BankAccount.organization))
@@ -73,6 +92,8 @@ async def get_bank_accounts(
     )
     if organization_id:
         stmt = stmt.where(BankAccount.organization_id == organization_id)
+    elif allowed is not None:
+        stmt = stmt.where(BankAccount.organization_id.in_(allowed))
 
     result = await db.execute(stmt)
     return result.scalars().all()
@@ -85,6 +106,7 @@ async def create_bank_account(
     current_user: User = Depends(PermissionChecker("account_balance_manage")),
 ):
     await _ensure_organization_exists(db, data.organization_id)
+    await _assert_org_allowed(db, current_user, data.organization_id)
 
     account = BankAccount(**data.model_dump())
     db.add(account)
@@ -109,9 +131,14 @@ async def update_bank_account(
     if not account:
         raise HTTPException(status_code=404, detail="Расчетный счет не найден")
 
+    # Доступ к текущей организации счёта.
+    await _assert_org_allowed(db, current_user, account.organization_id)
+
     update_data = data.model_dump(exclude_unset=True)
     if "organization_id" in update_data:
         await _ensure_organization_exists(db, update_data["organization_id"])
+        # При переносе счёта целевая организация тоже должна быть доступна.
+        await _assert_org_allowed(db, current_user, update_data["organization_id"])
 
     for field, value in update_data.items():
         setattr(account, field, value)
@@ -134,6 +161,8 @@ async def delete_bank_account(
     account = await db.get(BankAccount, account_id)
     if not account:
         raise HTTPException(status_code=404, detail="Расчетный счет не найден")
+
+    await _assert_org_allowed(db, current_user, account.organization_id)
 
     linked_balance = await db.execute(
         select(DailyAccountBalance.id)
@@ -162,6 +191,10 @@ async def get_daily_balances(
     if date_from and date_to and date_from > date_to:
         raise HTTPException(status_code=400, detail="date_from не может быть больше date_to")
 
+    allowed = await allowed_balance_org_ids(db, current_user)
+    if organization_id and allowed is not None and organization_id not in allowed:
+        raise HTTPException(status_code=403, detail=BALANCE_ORG_FORBIDDEN_DETAIL)
+
     stmt = (
         select(DailyAccountBalance)
         .options(
@@ -175,6 +208,8 @@ async def get_daily_balances(
 
     if organization_id:
         stmt = stmt.where(DailyAccountBalance.organization_id == organization_id)
+    elif allowed is not None:
+        stmt = stmt.where(DailyAccountBalance.organization_id.in_(allowed))
     if date_from:
         stmt = stmt.where(DailyAccountBalance.balance_date >= date_from)
     if date_to:
@@ -191,6 +226,7 @@ async def create_or_update_daily_balance(
     current_user: User = Depends(PermissionChecker("account_balance_manage")),
 ):
     await _ensure_organization_exists(db, data.organization_id)
+    await _assert_org_allowed(db, current_user, data.organization_id)
 
     bank_account = await db.get(BankAccount, data.bank_account_id)
     if not bank_account:
@@ -244,9 +280,15 @@ async def update_daily_balance(
     if not balance:
         raise HTTPException(status_code=404, detail="Остаток не найден")
 
+    # Доступ к текущей организации остатка.
+    await _assert_org_allowed(db, current_user, balance.organization_id)
+
     bank_account = await db.get(BankAccount, data.bank_account_id)
     if not bank_account:
         raise HTTPException(status_code=404, detail="Расчетный счет не найден")
+
+    # При переносе остатка на счёт другой организации она тоже должна быть доступна.
+    await _assert_org_allowed(db, current_user, bank_account.organization_id)
 
     conflict = await db.execute(
         select(DailyAccountBalance.id).where(
@@ -282,6 +324,8 @@ async def delete_daily_balance(
     balance = await db.get(DailyAccountBalance, balance_id)
     if not balance:
         raise HTTPException(status_code=404, detail="Остаток не найден")
+
+    await _assert_org_allowed(db, current_user, balance.organization_id)
 
     await db.delete(balance)
     await db.commit()
