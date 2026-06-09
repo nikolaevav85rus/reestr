@@ -13,6 +13,7 @@ from app.models.user import User
 from app.models.audit import AuditLog
 from app.models.notification import Notification
 from app.schemas.request import RequestCreate, RequestUpdate
+from app.services import notification_service as notif_svc
 from sqlalchemy.orm import selectinload
 
 def get_gmt3_time():
@@ -22,6 +23,24 @@ def get_gmt3_time():
 
 def request_title(req: PaymentRequest) -> str:
     return f"Заявка № {req.request_number or str(req.id)[:8].upper()}"
+
+
+def write_audit(db: AsyncSession, req: PaymentRequest, action: str, actor, summary: str, extra: Optional[dict] = None) -> None:
+    """Добавляет запись AuditLog для перехода состояния заявки.
+
+    summary — человекочитаемый текст (тот же, что и в уведомлении).
+    extra — доп. поля для changes (например {"old": ..., "new": ...}).
+    """
+    changes: dict = {"summary": summary}
+    if extra:
+        changes.update(extra)
+    db.add(AuditLog(
+        user_id=actor.id if actor else None,
+        entity_name="PaymentRequest",
+        entity_id=req.id,
+        action=action,
+        changes=changes,
+    ))
 
 async def create_payment_request(db: AsyncSession, request_data: RequestCreate, user_id: UUID) -> PaymentRequest:
     """
@@ -223,29 +242,52 @@ async def update_request_status(
     req.approval_status = status
     if reason:
         req.rejection_reason = reason
-    db.add(AuditLog(
-        user_id=current_user.id if current_user else None,
-        entity_name="PaymentRequest",
-        entity_id=req.id,
-        action="UPDATE_APPROVAL",
-        changes={
-            "old": old_status.value if isinstance(old_status, ApprovalStatus) else str(old_status),
-            "new": status.value if isinstance(status, ApprovalStatus) else str(status),
-        }
-    ))
 
-    # Уведомления инициатору при изменении статуса
+    # Человекочитаемый текст строим один раз — используем и в аудите, и в уведомлении.
     title = request_title(req)
     notif_map = {
         ApprovalStatus.APPROVED:      ("APPROVED",      f"{title}: согласована ФЭО. {req.counterparty}, {req.amount:,.0f} ₽."),
         ApprovalStatus.REJECTED:      ("REJECTED",      f"{title}: отклонена. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {reason or '—'}"),
         ApprovalStatus.CLARIFICATION: ("CLARIFICATION", f"{title}: требуется уточнение. {req.counterparty}, {req.amount:,.0f} ₽. Комментарий: {reason or '—'}"),
     }
+    summary = None
+    notif_type = None
     if status in notif_map:
-        notif_type, text = notif_map[status]
+        notif_type, summary = notif_map[status]
         if current_user and status == ApprovalStatus.APPROVED:
-            text = f"{title}: согласована ФЭО ({current_user.full_name}). {req.counterparty}, {req.amount:,.0f} ₽."
-        db.add(Notification(user_id=req.creator_id, request_id=req.id, text=text, type=notif_type))
+            summary = f"{title}: согласована ФЭО ({current_user.full_name}). {req.counterparty}, {req.amount:,.0f} ₽."
+
+    old_str = old_status.value if isinstance(old_status, ApprovalStatus) else str(old_status)
+    new_str = status.value if isinstance(status, ApprovalStatus) else str(status)
+    db.add(AuditLog(
+        user_id=current_user.id if current_user else None,
+        entity_name="PaymentRequest",
+        entity_id=req.id,
+        action="UPDATE_APPROVAL",
+        changes={
+            "summary": summary or f"Статус согласования: {old_str} → {new_str}",
+            "old": old_str,
+            "new": new_str,
+        }
+    ))
+
+    # Уведомления-алерты ответственным ролям (актор себя не уведомляет)
+    actor_id = current_user.id if current_user else None
+    if status in notif_map and summary:
+        if status == ApprovalStatus.APPROVED:
+            # Инициатор + кассиры (теперь нужна оплата)
+            recipients = [req.creator_id]
+            recipients += await notif_svc.get_active_users_with_permission(db, "req_pay")
+            await notif_svc.fan_out_notification(
+                db, recipients, summary, notif_type,
+                request_id=req.id, exclude_user_id=actor_id,
+            )
+        else:
+            # REJECTED / CLARIFICATION → инициатор
+            await notif_svc.fan_out_notification(
+                db, [req.creator_id], summary, notif_type,
+                request_id=req.id, exclude_user_id=actor_id,
+            )
 
     await db.commit()
     await db.refresh(req)
@@ -272,24 +314,33 @@ async def update_payment_status(
         raise HTTPException(status_code=400, detail="Оплатить можно только утверждённую заявку")
     old_status = req.payment_status
     req.payment_status = status
+
+    # Человекочитаемый текст строим один раз — используем и в аудите, и в уведомлении.
+    summary = None
+    if status == PaymentStatus.PAID:
+        actor = f" ({current_user.full_name})" if current_user else ""
+        summary = f"{request_title(req)}: оплачена казначеем{actor}. {req.counterparty}, {req.amount:,.0f} ₽."
+
+    old_str = old_status.value if isinstance(old_status, PaymentStatus) else str(old_status)
+    new_str = status.value if isinstance(status, PaymentStatus) else str(status)
     db.add(AuditLog(
         user_id=current_user.id if current_user else None,
         entity_name="PaymentRequest",
         entity_id=req.id,
         action="UPDATE_PAYMENT",
         changes={
-            "old": old_status.value if isinstance(old_status, PaymentStatus) else str(old_status),
-            "new": status.value if isinstance(status, PaymentStatus) else str(status),
+            "summary": summary or f"Статус оплаты: {old_str} → {new_str}",
+            "old": old_str,
+            "new": new_str,
         }
     ))
-    if status == PaymentStatus.PAID:
-        actor = f" ({current_user.full_name})" if current_user else ""
-        db.add(Notification(
-            user_id=req.creator_id,
+    if status == PaymentStatus.PAID and summary:
+        # Алерт инициатору (актор-кассир себя не уведомляет)
+        await notif_svc.fan_out_notification(
+            db, [req.creator_id], summary, "PAID",
             request_id=req.id,
-            text=f"{request_title(req)}: оплачена казначеем{actor}. {req.counterparty}, {req.amount:,.0f} ₽.",
-            type="PAID",
-        ))
+            exclude_user_id=current_user.id if current_user else None,
+        )
     await db.commit()
     await db.refresh(req)
     return req

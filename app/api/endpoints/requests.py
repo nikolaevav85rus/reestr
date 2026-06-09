@@ -263,6 +263,8 @@ async def submit_request(
     if not req.payment_date:
         raise HTTPException(status_code=400, detail="Укажите дату оплаты перед отправкой")
 
+    old_status = req.approval_status.value if isinstance(req.approval_status, ApprovalStatus) else str(req.approval_status)
+
     # Проверяем временной шлюз (МСК) — только если дата оплаты = сегодня
     gate_preview = await get_gate_preview(
         db,
@@ -274,10 +276,18 @@ async def submit_request(
     if not gate_preview.allowed:
         req.approval_status = ApprovalStatus.PENDING_GATE
         req.gate_reason = gate_preview.reason
+        summary = f"{request_title(req)}: подана на разрешение шлюза (исключение из регламента). {req.counterparty}, {req.amount:,.0f} ₽."
+        request_service.write_audit(db, req, "SUBMIT_GATE", current_user, summary, extra={"old": old_status, "new": "PENDING_GATE"})
+        recipients = await notif_svc.get_active_users_with_permission(db, "gate_approve")
+        await notif_svc.fan_out_notification(db, recipients, summary, "SUBMITTED", request_id=req.id, exclude_user_id=current_user.id)
         await db.commit()
         return await request_service.get_request_by_id(db, request_id)
 
     req.approval_status = ApprovalStatus.PENDING
+    summary = f"{request_title(req)}: подана на согласование ФЭО. {req.counterparty}, {req.amount:,.0f} ₽."
+    request_service.write_audit(db, req, "SUBMIT", current_user, summary, extra={"old": old_status, "new": "PENDING"})
+    recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
+    await notif_svc.fan_out_notification(db, recipients, summary, "SUBMITTED", request_id=req.id, exclude_user_id=current_user.id)
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 
@@ -388,6 +398,10 @@ async def approve_gate(
     req.special_order = True
     req.gate_approved_by = current_user.id
     req.gate_reason = body.reason or req.gate_reason
+    summary = f"{request_title(req)}: разрешён экстренный платёж (шлюз). {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование ФЭО."
+    request_service.write_audit(db, req, "APPROVE_GATE", current_user, summary, extra={"old": "PENDING_GATE", "new": "PENDING"})
+    recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
+    await notif_svc.fan_out_notification(db, recipients, summary, "GATE_APPROVED", request_id=req.id, exclude_user_id=current_user.id)
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 
@@ -407,11 +421,9 @@ async def reject_gate(
         raise HTTPException(status_code=400, detail="Заявка не ожидает разрешения шлюза")
     req.approval_status = ApprovalStatus.REJECTED
     req.rejection_reason = body.reason
-    await notif_svc.create_notification(
-        db, user_id=req.creator_id, request_id=req.id,
-        notif_type="GATE_REJECTED",
-        text=f"{request_title(req)}: запрос на экстренный платёж отклонён ФЭО. Причина: {body.reason or '—'}",
-    )
+    summary = f"{request_title(req)}: запрос на экстренный платёж отклонён ФЭО. Причина: {body.reason or '—'}"
+    request_service.write_audit(db, req, "REJECT_GATE", current_user, summary, extra={"old": "PENDING_GATE", "new": "REJECTED"})
+    await notif_svc.fan_out_notification(db, [req.creator_id], summary, "GATE_REJECTED", request_id=req.id, exclude_user_id=current_user.id)
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 
@@ -427,7 +439,11 @@ async def set_contract_status(
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     _ensure_not_marked(req)
+    old_contract = req.contract_status
     req.contract_status = data.get("contract_status", req.contract_status)
+    contract_label = {True: "Да", False: "Нет", None: "—"}.get(req.contract_status, str(req.contract_status))
+    summary = f"{request_title(req)}: статус договора изменён на «{contract_label}»."
+    request_service.write_audit(db, req, "SET_CONTRACT", current_user, summary, extra={"old": str(old_contract), "new": str(req.contract_status)})
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 
@@ -445,6 +461,10 @@ async def approve_memo(
     if req.approval_status != ApprovalStatus.PENDING_MEMO:
         raise HTTPException(status_code=400, detail="Заявка не ожидает согласования по бюджету")
     req.approval_status = ApprovalStatus.PENDING
+    summary = f"{request_title(req)}: внебюджетный платёж утверждён директором. {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование ФЭО."
+    request_service.write_audit(db, req, "APPROVE_MEMO", current_user, summary, extra={"old": "PENDING_MEMO", "new": "PENDING"})
+    recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
+    await notif_svc.fan_out_notification(db, recipients, summary, "MEMO_APPROVED", request_id=req.id, exclude_user_id=current_user.id)
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 
@@ -464,11 +484,9 @@ async def reject_memo(
         raise HTTPException(status_code=400, detail="Заявка не ожидает согласования по бюджету")
     req.approval_status = ApprovalStatus.REJECTED
     req.rejection_reason = body.reason
-    await notif_svc.create_notification(
-        db, user_id=req.creator_id, request_id=req.id,
-        notif_type="REJECTED",
-        text=f"{request_title(req)}: внебюджетный платёж не утверждён. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}",
-    )
+    summary = f"{request_title(req)}: внебюджетный платёж не утверждён. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}"
+    request_service.write_audit(db, req, "REJECT_MEMO", current_user, summary, extra={"old": "PENDING_MEMO", "new": "REJECTED"})
+    await notif_svc.fan_out_notification(db, [req.creator_id], summary, "REJECTED", request_id=req.id, exclude_user_id=current_user.id)
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 
@@ -492,11 +510,10 @@ async def memo_reason(
         raise HTTPException(status_code=400, detail="Укажите обоснование вне бюджета")
     req.rejection_reason = body.reason.strip()
     req.approval_status = ApprovalStatus.PENDING_MEMO
-    await notif_svc.create_notification(
-        db, user_id=req.creator_id, request_id=req.id,
-        notif_type="OFF_BUDGET",
-        text=f"{request_title(req)}: добавлено обоснование вне бюджета. {req.counterparty}, {req.amount:,.0f} ₽.",
-    )
+    summary = f"{request_title(req)}: добавлено обоснование вне бюджета. {req.counterparty}, {req.amount:,.0f} ₽."
+    request_service.write_audit(db, req, "MEMO_REASON", current_user, summary, extra={"old": "MEMO_REQUIRED", "new": "PENDING_MEMO"})
+    recipients = await notif_svc.get_active_users_with_permission(db, "memo_approve")
+    await notif_svc.fan_out_notification(db, recipients, summary, "OFF_BUDGET", request_id=req.id, exclude_user_id=current_user.id)
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 
@@ -518,11 +535,9 @@ async def cancel_memo(
         raise HTTPException(status_code=400, detail="Отменить можно только заявку, ожидающую обоснования вне бюджета")
     req.approval_status = ApprovalStatus.REJECTED
     req.rejection_reason = body.reason or "Отменена инициатором"
-    await notif_svc.create_notification(
-        db, user_id=req.creator_id, request_id=req.id,
-        notif_type="REJECTED",
-        text=f"{request_title(req)}: отменена. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {req.rejection_reason}",
-    )
+    summary = f"{request_title(req)}: отменена. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {req.rejection_reason}"
+    request_service.write_audit(db, req, "CANCEL_MEMO", current_user, summary, extra={"old": "MEMO_REQUIRED", "new": "REJECTED"})
+    await notif_svc.fan_out_notification(db, [req.creator_id], summary, "REJECTED", request_id=req.id, exclude_user_id=current_user.id)
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 
@@ -545,6 +560,7 @@ async def move_to_draft(
     if req.approval_status not in allowed:
         raise HTTPException(status_code=400, detail="Перенос доступен только для заявок в статусе 'Вне бюджета' или 'Перенесено'")
     from datetime import date as date_type
+    old_status = req.approval_status.value if isinstance(req.approval_status, ApprovalStatus) else str(req.approval_status)
     old_date = req.payment_date
     new_date = data.get("payment_date")
     if new_date:
@@ -555,9 +571,9 @@ async def move_to_draft(
     req.approval_status = ApprovalStatus.DRAFT
     old_str = old_date.strftime('%d.%m.%Y') if old_date else '—'
     new_str = req.payment_date.strftime('%d.%m.%Y') if req.payment_date else '—'
-    db.add(Notification(user_id=req.creator_id, request_id=req.id,
-        text=f"{request_title(req)}: инициатор перенёс дату с {old_str} на {new_str}. {req.counterparty}, {req.amount:,.0f} ₽",
-        type="RESCHEDULED"))
+    summary = f"{request_title(req)}: инициатор перенёс дату с {old_str} на {new_str}. {req.counterparty}, {req.amount:,.0f} ₽"
+    request_service.write_audit(db, req, "MOVE_TO_DRAFT", current_user, summary, extra={"old": old_status, "new": "DRAFT"})
+    await notif_svc.fan_out_notification(db, [req.creator_id], summary, "RESCHEDULED", request_id=req.id, exclude_user_id=current_user.id)
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 
@@ -578,15 +594,16 @@ async def set_budget_status(
     if new_value is False and req.approval_status == ApprovalStatus.PENDING:
         req.approval_status = ApprovalStatus.MEMO_REQUIRED
         req.rejection_reason = None
-        db.add(Notification(
-            user_id=req.creator_id,
-            request_id=req.id,
-            text=f"{request_title(req)}: требуется обоснование вне бюджета. {req.counterparty}, {req.amount:,.0f} ₽.",
-            type="OFF_BUDGET",
-        ))
+        summary = f"{request_title(req)}: требуется обоснование вне бюджета. {req.counterparty}, {req.amount:,.0f} ₽."
+        request_service.write_audit(db, req, "SET_BUDGET", current_user, summary, extra={"old": "PENDING", "new": "MEMO_REQUIRED", "is_budgeted": False})
+        await notif_svc.fan_out_notification(db, [req.creator_id], summary, "OFF_BUDGET", request_id=req.id, exclude_user_id=current_user.id)
     elif new_value is True and req.approval_status == ApprovalStatus.MEMO_REQUIRED:
         req.approval_status = ApprovalStatus.PENDING
         req.rejection_reason = None
+        summary = f"{request_title(req)}: подтверждено наличие в бюджете. {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование ФЭО."
+        request_service.write_audit(db, req, "SET_BUDGET", current_user, summary, extra={"old": "MEMO_REQUIRED", "new": "PENDING", "is_budgeted": True})
+        recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
+        await notif_svc.fan_out_notification(db, recipients, summary, "SUBMITTED", request_id=req.id, exclude_user_id=current_user.id)
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 
@@ -601,7 +618,10 @@ async def set_special_order(
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     _ensure_not_marked(req)
+    old_special = req.special_order
     req.special_order = data.get("special_order", req.special_order)
+    summary = f"{request_title(req)}: спецраспоряжение {'установлено' if req.special_order else 'снято'}."
+    request_service.write_audit(db, req, "SET_SPECIAL_ORDER", current_user, summary, extra={"old": str(old_special), "new": str(req.special_order)})
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 
@@ -618,13 +638,12 @@ async def suspend_request(
     _ensure_not_marked(req)
     if req.approval_status not in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}:
         raise HTTPException(status_code=400, detail="Отложить можно только заявку на согласовании или согласованную заявку")
+    old_status = req.approval_status.value if isinstance(req.approval_status, ApprovalStatus) else str(req.approval_status)
     req.approval_status = ApprovalStatus.SUSPENDED
     req.rejection_reason = body.reason
-    await notif_svc.create_notification(
-        db, user_id=req.creator_id, request_id=req.id,
-        notif_type="SUSPENDED",
-        text=f"{request_title(req)}: отложена. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}",
-    )
+    summary = f"{request_title(req)}: отложена. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}"
+    request_service.write_audit(db, req, "SUSPEND", current_user, summary, extra={"old": old_status, "new": "SUSPENDED"})
+    await notif_svc.fan_out_notification(db, [req.creator_id], summary, "SUSPENDED", request_id=req.id, exclude_user_id=current_user.id)
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 
@@ -653,13 +672,39 @@ async def unsuspend_request(
     req.rejection_reason = None
     old_str = old_date.strftime('%d.%m.%Y') if old_date else '—'
     new_str = req.payment_date.strftime('%d.%m.%Y') if req.payment_date else '—'
-    await notif_svc.create_notification(
-        db, user_id=req.creator_id, request_id=req.id,
-        notif_type="RESCHEDULED",
-        text=f"{request_title(req)}: перенесена с {old_str} на {new_str}. {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование.",
-    )
+    summary = f"{request_title(req)}: перенесена с {old_str} на {new_str}. {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование."
+    request_service.write_audit(db, req, "UNSUSPEND", current_user, summary, extra={"old": "SUSPENDED", "new": "PENDING"})
+    recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
+    await notif_svc.fan_out_notification(db, recipients, summary, "RESCHEDULED", request_id=req.id, exclude_user_id=current_user.id)
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
+
+
+# Резервные русские подписи для действий аудита, у которых нет summary в changes.
+_AUDIT_ACTION_FALLBACK = {
+    "CREATE": "Создание заявки",
+    "UPDATE": "Изменение заявки",
+    "UPDATE_APPROVAL": "Смена статуса согласования",
+    "UPDATE_PAYMENT": "Смена статуса оплаты",
+    "DELETE": "Удаление заявки",
+    "SUBMIT": "Подана на согласование",
+    "SUBMIT_GATE": "Подана на разрешение шлюза",
+    "APPROVE_GATE": "Разрешён экстренный платёж",
+    "REJECT_GATE": "Отклонён экстренный платёж",
+    "APPROVE_MEMO": "Внебюджетный платёж утверждён",
+    "REJECT_MEMO": "Внебюджетный платёж не утверждён",
+    "MEMO_REASON": "Добавлено обоснование вне бюджета",
+    "CANCEL_MEMO": "Заявка отменена инициатором",
+    "MOVE_TO_DRAFT": "Перенесена в черновик",
+    "SET_BUDGET": "Изменён бюджетный статус",
+    "SET_SPECIAL_ORDER": "Изменено спецраспоряжение",
+    "SET_CONTRACT": "Изменён статус договора",
+    "SUSPEND": "Заявка отложена",
+    "UNSUSPEND": "Заявка возобновлена",
+    "POSTPONE": "Заявка перенесена",
+    "MARK_DELETION": "Помечена на удаление",
+    "UNMARK_DELETION": "Снята пометка на удаление",
+}
 
 
 @router.get("/{request_id}/history")
@@ -668,22 +713,40 @@ async def get_request_history(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("req_view_own")),
 ):
-    """История событий по заявке (все уведомления, привязанные к ней)."""
+    """История событий по заявке (журнал аудита AuditLog).
+
+    Формат ответа сохранён для совместимости с фронтендом (вкладка «История»):
+    список объектов {id, type, text, created_at}.
+    """
     res = await db.execute(
-        select(Notification)
-        .where(Notification.request_id == request_id)
-        .order_by(Notification.created_at.asc())
+        select(AuditLog)
+        .where(AuditLog.entity_name == "PaymentRequest")
+        .where(AuditLog.entity_id == request_id)
+        .order_by(AuditLog.timestamp.asc())
     )
-    notifications = res.scalars().all()
-    return [
-        {
-            "id": str(n.id),
-            "type": n.type,
-            "text": n.text,
-            "created_at": n.created_at.isoformat() if n.created_at else None,
-        }
-        for n in notifications
-    ]
+    logs = res.scalars().all()
+    result = []
+    for log in logs:
+        summary = None
+        new_status = None
+        if isinstance(log.changes, dict):
+            summary = log.changes.get("summary")
+            new_status = log.changes.get("new")
+        # Для смены статуса согласования/оплаты используем результирующий статус
+        # как тип события — так вкладка «История» красит approve/reject/clarify/pay
+        # разными цветами (UPDATE_APPROVAL сам по себе их не различает).
+        if log.action in ("UPDATE_APPROVAL", "UPDATE_PAYMENT") and new_status:
+            ev_type = str(new_status)
+        else:
+            ev_type = log.action
+        text = summary or _AUDIT_ACTION_FALLBACK.get(log.action, log.action)
+        result.append({
+            "id": str(log.id),
+            "type": ev_type,
+            "text": text,
+            "created_at": log.timestamp.isoformat() if log.timestamp else None,
+        })
+    return result
 
 
 @router.get("/{request_id}/audit")
@@ -760,6 +823,7 @@ async def postpone_request(
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     _ensure_not_marked(req)
+    old_status = req.approval_status.value if isinstance(req.approval_status, ApprovalStatus) else str(req.approval_status)
     old_date = req.payment_date
     if body.payment_date:
         req.payment_date = date_type.fromisoformat(body.payment_date)
@@ -768,8 +832,9 @@ async def postpone_request(
     old_str = old_date.strftime('%d.%m.%Y') if old_date else '—'
     new_str = req.payment_date.strftime('%d.%m.%Y') if req.payment_date else '—'
     date_info = f"с {old_str} на {new_str}" if body.payment_date else f"(дата оплаты: {old_str})"
-    text = f"{request_title(req)}: перенесена {date_info}. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}"
-    db.add(Notification(user_id=req.creator_id, request_id=req.id, text=text, type="POSTPONED"))
+    summary = f"{request_title(req)}: перенесена {date_info}. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}"
+    request_service.write_audit(db, req, "POSTPONE", current_user, summary, extra={"old": old_status, "new": "POSTPONED"})
+    await notif_svc.fan_out_notification(db, [req.creator_id], summary, "POSTPONED", request_id=req.id, exclude_user_id=current_user.id)
     await db.commit()
     return await request_service.get_request_by_id(db, request_id)
 

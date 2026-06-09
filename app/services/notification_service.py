@@ -1,9 +1,52 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from uuid import UUID
-from typing import Optional
+from typing import Optional, Iterable
 
 from app.models.notification import Notification
+from app.models.user import User, Role
+from app.models.user import role_permissions
+from app.models.user import Permission
+
+
+async def get_active_users_with_permission(db: AsyncSession, perm: str) -> list[UUID]:
+    """Возвращает id активных пользователей, чья роль имеет указанное право,
+    плюс пользователей с ролью-суперадмином. Список уникален."""
+    res = await db.execute(
+        select(User.id)
+        .join(Role, User.role_id == Role.id)
+        .outerjoin(role_permissions, role_permissions.c.role_id == Role.id)
+        .outerjoin(Permission, Permission.id == role_permissions.c.permission_id)
+        .where(
+            User.is_active == True,  # noqa: E712
+            (Permission.name == perm) | (Role.is_superadmin == True),  # noqa: E712
+        )
+        .distinct()
+    )
+    return [row[0] for row in res.all()]
+
+
+async def fan_out_notification(
+    db: AsyncSession,
+    recipient_ids: Iterable[UUID],
+    text: str,
+    notif_type: str,
+    request_id: Optional[UUID] = None,
+    exclude_user_id: Optional[UUID] = None,
+) -> int:
+    """Создаёт уведомление каждому уникальному получателю, исключая актора.
+    Возвращает число созданных уведомлений."""
+    seen: set[UUID] = set()
+    created = 0
+    for uid in recipient_ids:
+        if uid is None or uid == exclude_user_id or uid in seen:
+            continue
+        seen.add(uid)
+        db.add(Notification(user_id=uid, request_id=request_id, text=text, type=notif_type))
+        created += 1
+    if created:
+        await db.flush()
+    return created
 
 
 async def create_notification(

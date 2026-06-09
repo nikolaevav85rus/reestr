@@ -1,10 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { Button, Col, Empty, Row, Space, Tabs, Tag, Timeline, Typography } from 'antd';
 import { PaperClipOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { formatDateRu } from '../utils/excelExport';
 import { contractStatusKey, type HistoryColorConfig, type StatusConfig } from '../requestStatus';
-import apiClient from '../api/apiClient';
-import { getErrorMessage } from '../utils/errorMessage';
 
 const { Text } = Typography;
 
@@ -66,43 +64,6 @@ export type RequestHistoryItem = {
   text: string;
   created_at: string;
 };
-
-export type RequestAuditItem = {
-  id: string;
-  timestamp: string | null;
-  action: string;
-  actor: string | null;
-  changes: unknown;
-};
-
-const AUDIT_ACTION_LABELS: Record<string, string> = {
-  CREATE: 'Создание',
-  UPDATE: 'Изменение',
-  UPDATE_APPROVAL: 'Смена статуса согласования',
-  UPDATE_PAYMENT: 'Смена статуса оплаты',
-  DELETE: 'Удаление',
-  PURGE_MARKED: 'Очистка помеченных',
-};
-
-function auditActionLabel(action: string): string {
-  return AUDIT_ACTION_LABELS[action] ?? action;
-}
-
-function auditChangesSummary(changes: unknown): string {
-  if (changes === null || changes === undefined) return '';
-  if (typeof changes !== 'object') return String(changes);
-  const entries = Object.entries(changes as Record<string, unknown>);
-  if (!entries.length) return '';
-  return entries
-    .map(([key, value]) => {
-      if (value && typeof value === 'object' && 'old' in value && 'new' in value) {
-        const v = value as { old?: unknown; new?: unknown };
-        return `${key}: ${v.old ?? '—'} → ${v.new ?? '—'}`;
-      }
-      return `${key}: ${String(value)}`;
-    })
-    .join('; ');
-}
 
 type RequestDetailsCardProps = {
   request: RequestDetailsItem;
@@ -194,32 +155,6 @@ const RequestDetailsCard: React.FC<RequestDetailsCardProps> = ({
   onOpenFile,
   actions,
 }) => {
-  const [auditRows, setAuditRows] = useState<RequestAuditItem[]>([]);
-  const [auditLoading, setAuditLoading] = useState(false);
-
-  useEffect(() => {
-    if (!r.id) return;
-    let cancelled = false;
-    setAuditLoading(true);
-    apiClient
-      .get<RequestAuditItem[]>(`/requests/${r.id}/audit`)
-      .then((res) => {
-        if (!cancelled) setAuditRows(Array.isArray(res.data) ? res.data : []);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          console.error(getErrorMessage(err, 'Не удалось загрузить журнал аудита'));
-          setAuditRows([]);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setAuditLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [r.id]);
-
   const approvalCfg = approvalConfig[r.approval_status] ?? { label: r.approval_status, color: 'default' };
   const paymentCfg = paymentConfig[r.payment_status] ?? { label: r.payment_status, color: 'default' };
   const contractCfg = contractConfig[contractStatusKey(r.contract_status ?? null)] ?? { label: '—', color: 'default' };
@@ -353,44 +288,12 @@ const RequestDetailsCard: React.FC<RequestDetailsCardProps> = ({
     <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="Истории по заявке пока нет" />
   );
 
-  const auditTab = auditRows.length ? (
-    <Timeline
-      style={{ paddingTop: 8 }}
-      items={auditRows.map(a => {
-        const summary = auditChangesSummary(a.changes);
-        return {
-          color: 'blue',
-          children: (
-            <div>
-              <Text type="secondary" style={{ fontSize: 14 }}>
-                {a.timestamp ? new Date(a.timestamp).toLocaleString('ru-RU') : '—'}
-              </Text>
-              <div>
-                <Text strong>{auditActionLabel(a.action)}</Text>
-                {a.actor ? <Text type="secondary"> · {a.actor}</Text> : null}
-              </div>
-              {summary ? (
-                <div><Text type="secondary" style={{ fontSize: 13 }}>{summary}</Text></div>
-              ) : null}
-            </div>
-          ),
-        };
-      })}
-    />
-  ) : (
-    <Empty
-      image={Empty.PRESENTED_IMAGE_SIMPLE}
-      description={auditLoading ? 'Загрузка журнала аудита…' : 'Записей аудита по заявке нет'}
-    />
-  );
-
   return (
     <Tabs
       size="small"
       items={[
         { key: 'data', label: 'Данные', children: dataTab },
         { key: 'history', label: `История (${history.length})`, children: historyTab },
-        { key: 'audit', label: `Аудит (${auditRows.length})`, children: auditTab },
       ]}
     />
   );
