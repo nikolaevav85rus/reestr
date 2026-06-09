@@ -16,6 +16,8 @@ pip-wheel-metadata/
 .env
 .env.*
 !.env.example
+documentation/evoai_api.txt
+backup_*.sql
 
 # ===== Runtime / Storage =====
 storage/
