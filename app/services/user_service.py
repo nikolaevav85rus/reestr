@@ -12,13 +12,13 @@ from app.core.security import get_password_hash
 async def create_user(db: AsyncSession, user_in: UserCreate):
     """Создает нового пользователя."""
     hashed_pw = get_password_hash(user_in.password)
-    
-    result_role = await db.execute(select(Role).where(Role.name == user_in.role))
+
+    result_role = await db.execute(select(Role).where(Role.id == user_in.role_id))
     role_obj = result_role.scalar_one_or_none()
-    
+
     if not role_obj:
-        raise HTTPException(status_code=400, detail=f"Роль '{user_in.role}' не найдена.")
-    
+        raise HTTPException(status_code=400, detail="Указанная роль не найдена.")
+
     db_user = User(
         ad_login=user_in.ad_login.lower(),
         full_name=user_in.full_name,
@@ -82,18 +82,20 @@ async def update_user(db: AsyncSession, user_id: UUID, user_in: UserUpdate):
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
 
-    # ИСПРАВЛЕНО: Гарантированный захват всех полей
+    # Гарантированный захват только переданных полей
     update_data = user_in.model_dump(exclude_unset=True)
-    
+
+    if "ad_login" in update_data and update_data["ad_login"]:
+        user.ad_login = update_data["ad_login"]
     if "full_name" in update_data:
         user.full_name = update_data["full_name"]
     if "is_active" in update_data:
         user.is_active = update_data["is_active"]
     if "direction_id" in update_data:
         user.direction_id = update_data["direction_id"]
-        
-    if "role" in update_data and update_data["role"]:
-        res_role = await db.execute(select(Role).where(Role.name == update_data["role"]))
+
+    if "role_id" in update_data and update_data["role_id"]:
+        res_role = await db.execute(select(Role).where(Role.id == update_data["role_id"]))
         r_obj = res_role.scalar_one_or_none()
         if r_obj:
             user.role_id = r_obj.id

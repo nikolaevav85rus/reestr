@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, computed_field
+from pydantic import BaseModel, ConfigDict, computed_field, AliasChoices, Field
 from typing import Optional
 from uuid import UUID
 
@@ -15,7 +15,7 @@ class RoleResponse(BaseModel):
 class DirectionResponse(BaseModel):
     id: UUID
     name: str
-    
+
     model_config = ConfigDict(from_attributes=True)
 
 # --- Основные схемы пользователя ---
@@ -26,18 +26,65 @@ class UserBase(BaseModel):
     is_active: bool = True
 
 class UserCreate(UserBase):
+    """Создание пользователя.
+
+    Фронтенд (Users.tsx) и API-тесты присылают `role_id` (UUID роли).
+    Лишние/инъецированные ключи (hashed_password, is_superadmin и т.п.)
+    игнорируются благодаря extra='ignore' — попасть в ORM они не могут.
+    """
+    model_config = ConfigDict(extra="ignore")
+
     password: str
-    role: str # При создании ждем строку (например, "ADMIN")
+    role_id: UUID
     direction_id: Optional[UUID] = None
 
 class UserUpdate(BaseModel):
+    """Обновление пользователя. Все поля опциональны — поддерживаем как
+    полное редактирование из модалки, так и частичные патчи (например,
+    только `is_active` из auth-security.spec.ts)."""
+    model_config = ConfigDict(extra="ignore")
+
+    ad_login: Optional[str] = None
     full_name: Optional[str] = None
-    role: Optional[str] = None
+    role_id: Optional[UUID] = None
     direction_id: Optional[UUID] = None
     is_active: Optional[bool] = None
 
+class UserActiveUpdate(BaseModel):
+    """Тумблер доступа на портал (PATCH /{id}/active)."""
+    model_config = ConfigDict(extra="ignore")
+
+    is_active: Optional[bool] = None
+
 class UserPasswordUpdate(BaseModel):
-    password: str
+    """Смена пароля.
+
+    Фронтенд (Users.tsx) отправляет поле `new_password`. Принимаем его как
+    основной ключ, но дополнительно допускаем `password` ради совместимости
+    с существующим user_service.UserPasswordUpdate-контрактом.
+    """
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    password: str = Field(validation_alias=AliasChoices("new_password", "password"))
+
+class RoleCreate(BaseModel):
+    """Создание роли (whitelist). is_superadmin намеренно НЕ принимается —
+    его нельзя выставить через API, защита от создания god-mode роли."""
+    model_config = ConfigDict(extra="ignore")
+    name: str
+    label: str
+    color: Optional[str] = "blue"
+
+class RoleBasicUpdate(BaseModel):
+    """Редактирование параметров роли (whitelist). is_superadmin недоступен."""
+    model_config = ConfigDict(extra="ignore")
+    label: Optional[str] = None
+    color: Optional[str] = None
+
+class RolePermissionsUpdate(BaseModel):
+    """Назначение списка прав роли (whitelist)."""
+    model_config = ConfigDict(extra="ignore")
+    permissions: list[str] = []
 
 class UserResponse(UserBase):
     id: UUID

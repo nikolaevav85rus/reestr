@@ -8,9 +8,49 @@ from uuid import UUID
 from app.api.deps import get_db, PermissionChecker
 from app.models.user import User, Role
 from app.models.organization import Organization, Cluster
+from app.models.direction import Direction
+from app.schemas.user import (
+    UserCreate,
+    UserUpdate,
+    UserActiveUpdate,
+    UserPasswordUpdate,
+)
 from app.core.security import get_password_hash # Предполагается, что у вас есть функция хеширования
 
 router = APIRouter()
+
+
+def _caller_is_superadmin(current_user: User) -> bool:
+    return bool(current_user.role and getattr(current_user.role, "is_superadmin", False))
+
+
+async def _resolve_role_or_403(
+    db: AsyncSession,
+    role_id: UUID,
+    current_user: User,
+) -> Role:
+    """Проверяет существование роли и блокирует эскалацию привилегий.
+
+    - 400, если роль с таким id отсутствует (вместо падения по FK -> 500).
+    - 403, если вызывающий не суперадмин, но пытается назначить роль
+      с is_superadmin=True.
+    """
+    role = await db.get(Role, role_id)
+    if not role:
+        raise HTTPException(status_code=400, detail="Указанная роль не найдена")
+    if getattr(role, "is_superadmin", False) and not _caller_is_superadmin(current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="Недостаточно прав для назначения роли суперадминистратора",
+        )
+    return role
+
+
+async def _validate_direction_or_404(db: AsyncSession, direction_id: UUID) -> None:
+    """ЦФО (direction) должно существовать, иначе 404 вместо FK-ошибки 500."""
+    direction = await db.get(Direction, direction_id)
+    if not direction:
+        raise HTTPException(status_code=404, detail="Указанное ЦФО не найдено")
 
 
 def _serialize_user_safe(user: User) -> dict:
@@ -73,22 +113,33 @@ async def get_users(
 
 @router.post("/")
 async def create_user(
-    data: dict, 
-    db: AsyncSession = Depends(get_db), 
+    data: UserCreate,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("user_edit"))
 ):
-    """Создать нового пользователя."""
+    """Создать нового пользователя.
+
+    Тело валидируется схемой UserCreate (whitelist: ad_login, full_name,
+    password, role_id, direction_id, is_active). Любые иные ключи
+    (hashed_password, is_superadmin и пр.) игнорируются и в ORM не попадают.
+    """
     # Проверка на уникальность логина
-    existing = await db.execute(select(User).where(User.ad_login == data['ad_login']))
+    existing = await db.execute(select(User).where(User.ad_login == data.ad_login))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Пользователь с таким логином (AD) уже существует")
 
+    # Защита от эскалации привилегий + проверка существования FK.
+    await _resolve_role_or_403(db, data.role_id, current_user)
+    if data.direction_id is not None:
+        await _validate_direction_or_404(db, data.direction_id)
+
     new_user = User(
-        ad_login=data['ad_login'],
-        full_name=data['full_name'],
-        hashed_password=get_password_hash(data['password']),
-        role_id=data['role_id'],
-        direction_id=data.get('direction_id') # Может быть None
+        ad_login=data.ad_login,
+        full_name=data.full_name,
+        hashed_password=get_password_hash(data.password),
+        role_id=data.role_id,
+        direction_id=data.direction_id,  # Может быть None
+        is_active=data.is_active,
     )
     db.add(new_user)
     await db.commit()
@@ -105,32 +156,52 @@ async def create_user(
 
 @router.put("/{user_id}")
 async def update_user(
-    user_id: UUID, 
-    data: dict, 
-    db: AsyncSession = Depends(get_db), 
+    user_id: UUID,
+    data: UserUpdate,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("user_edit"))
 ):
-    """Обновить данные пользователя."""
+    """Обновить данные пользователя.
+
+    Тело валидируется схемой UserUpdate (whitelist: ad_login, full_name,
+    role_id, direction_id, is_active — все опциональны). Поддерживаются как
+    полное редактирование, так и частичные патчи (например, только is_active).
+    Произвольные/инъецированные ключи игнорируются и в ORM не попадают.
+    """
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
-    
+
+    # Берём только реально переданные клиентом поля.
+    update_data = data.model_dump(exclude_unset=True)
+
     # Если логин меняется, проверяем уникальность
-    if 'ad_login' in data and data['ad_login'] != user.ad_login:
-        existing = await db.execute(select(User).where(User.ad_login == data['ad_login']))
+    if 'ad_login' in update_data and update_data['ad_login'] and update_data['ad_login'] != user.ad_login:
+        existing = await db.execute(select(User).where(User.ad_login == update_data['ad_login']))
         if existing.scalar_one_or_none():
             raise HTTPException(status_code=400, detail="Логин уже занят другим сотрудником")
-            
-    user.ad_login = data.get('ad_login', user.ad_login)
-    user.full_name = data.get('full_name', user.full_name)
-    user.role_id = data.get('role_id', user.role_id)
-    user.direction_id = data.get('direction_id', user.direction_id)
-    if 'is_active' in data:
+        user.ad_login = update_data['ad_login']
+
+    if 'full_name' in update_data and update_data['full_name'] is not None:
+        user.full_name = update_data['full_name']
+
+    # Смена роли: проверка существования + защита от эскалации привилегий.
+    if 'role_id' in update_data and update_data['role_id'] is not None:
+        await _resolve_role_or_403(db, update_data['role_id'], current_user)
+        user.role_id = update_data['role_id']
+
+    # ЦФО: None допустимо (открепление), иначе проверяем существование.
+    if 'direction_id' in update_data:
+        if update_data['direction_id'] is not None:
+            await _validate_direction_or_404(db, update_data['direction_id'])
+        user.direction_id = update_data['direction_id']
+
+    if 'is_active' in update_data and update_data['is_active'] is not None:
         if user.ad_login == 'admin':
             raise HTTPException(status_code=400, detail="Нельзя заблокировать системного администратора")
-        if data['is_active'] is False and str(user_id) == str(current_user.id):
+        if update_data['is_active'] is False and str(user_id) == str(current_user.id):
             raise HTTPException(status_code=400, detail="Нельзя заблокировать собственный аккаунт")
-        user.is_active = data['is_active']
+        user.is_active = update_data['is_active']
 
     await db.commit()
 
@@ -147,7 +218,7 @@ async def update_user(
 @router.patch("/{user_id}/active")
 async def toggle_user_active(
     user_id: UUID,
-    data: dict,
+    data: UserActiveUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("user_edit"))
 ):
@@ -159,23 +230,28 @@ async def toggle_user_active(
         raise HTTPException(status_code=400, detail="Нельзя заблокировать собственный аккаунт")
     if user.ad_login == 'admin':
         raise HTTPException(status_code=400, detail="Нельзя заблокировать системного администратора")
-    user.is_active = data.get('is_active', not user.is_active)
+    # Если is_active не передан — инвертируем текущее значение (поведение тумблера).
+    user.is_active = data.is_active if data.is_active is not None else (not user.is_active)
     await db.commit()
     return {"id": str(user.id), "is_active": user.is_active}
 
 @router.put("/{user_id}/password")
 async def update_password(
-    user_id: UUID, 
-    data: dict, 
-    db: AsyncSession = Depends(get_db), 
+    user_id: UUID,
+    data: UserPasswordUpdate,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("user_edit"))
 ):
-    """Сменить пароль пользователя."""
+    """Сменить пароль пользователя.
+
+    Тело валидируется схемой UserPasswordUpdate. Фронтенд (Users.tsx)
+    присылает поле `new_password`; схема принимает его как алиас к `password`.
+    """
     user = await db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
-        
-    user.hashed_password = get_password_hash(data['new_password'])
+
+    user.hashed_password = get_password_hash(data.password)
     await db.commit()
     return {"status": "success"}
 

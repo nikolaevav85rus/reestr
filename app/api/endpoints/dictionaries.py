@@ -13,7 +13,28 @@ from app.models.user import Permission, Role, User
 from app.models.budget import BudgetItem
 from app.models.request import PaymentRequest
 
+from app.schemas.organization import (
+    OrganizationCreate, OrganizationUpdate,
+    ClusterCreate, ClusterUpdate,
+    PaymentGroupCreate, PaymentGroupUpdate,
+)
+from app.schemas.direction import (
+    DirectionCreate, DirectionUpdate,
+    DirectionCategoryCreate, DirectionCategoryUpdate,
+)
+from app.schemas.budget import BudgetItemCreate, BudgetItemUpdate
+from app.schemas.user import RoleCreate, RoleBasicUpdate, RolePermissionsUpdate
+
 router = APIRouter()
+
+
+async def _ensure_exists(db: AsyncSession, model, obj_id, detail: str) -> None:
+    """Проверяет, что строка по FK существует. Иначе 400 (вместо FK -> 500)."""
+    if obj_id is None:
+        return
+    found = await db.get(model, obj_id)
+    if not found:
+        raise HTTPException(status_code=400, detail=detail)
 
 # --- КЛАСТЕРЫ (Clusters) ---
 @router.get("/clusters")
@@ -22,20 +43,25 @@ async def get_clusters(db: AsyncSession = Depends(get_db)):
     return result.scalars().all()
 
 @router.post("/clusters")
-async def create_cluster(data: dict, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
-    new_obj = Cluster(name=data['name'], head_id=data.get('head_id'))
+async def create_cluster(data: ClusterCreate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
+    if data.head_id is not None:
+        await _ensure_exists(db, User, data.head_id, "Руководитель кластера не найден")
+    new_obj = Cluster(name=data.name, head_id=data.head_id, is_active=data.is_active)
     db.add(new_obj)
     await db.commit()
     await db.refresh(new_obj)
     return new_obj
 
 @router.put("/clusters/{id}")
-async def update_cluster(id: UUID, data: dict, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
+async def update_cluster(id: UUID, data: ClusterUpdate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
     obj = await db.get(Cluster, id)
-    if not obj: 
+    if not obj:
         raise HTTPException(status_code=404, detail="Кластер не найден")
-    obj.name = data.get('name', obj.name)
-    obj.head_id = data.get('head_id', obj.head_id)
+    update_data = data.model_dump(exclude_unset=True)
+    if 'head_id' in update_data and update_data['head_id'] is not None:
+        await _ensure_exists(db, User, update_data['head_id'], "Руководитель кластера не найден")
+    for k, v in update_data.items():
+        setattr(obj, k, v)
     await db.commit()
     return obj
 
@@ -65,21 +91,31 @@ async def get_organizations(search: Optional[str] = None, db: AsyncSession = Dep
     return result.scalars().all()
 
 @router.post("/organizations")
-async def create_org(data: dict, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
-    new_org = Organization(**data)
+async def create_org(data: OrganizationCreate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
+    # Проверяем FK, влияющие на видимость/авторизацию.
+    await _ensure_exists(db, PaymentGroup, data.payment_group_id, "Группа оплаты не найдена")
+    await _ensure_exists(db, Cluster, data.cluster_id, "Кластер не найден")
+    await _ensure_exists(db, User, data.director_id, "Директор не найден")
+    new_org = Organization(**data.model_dump())
     db.add(new_org)
     await db.commit()
     await db.refresh(new_org)
     return new_org
 
 @router.put("/organizations/{id}")
-async def update_org(id: UUID, data: dict, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
+async def update_org(id: UUID, data: OrganizationUpdate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
     obj = await db.get(Organization, id)
-    if not obj: 
+    if not obj:
         raise HTTPException(status_code=404, detail="Организация не найдена")
-    for k, v in data.items(): 
-        if hasattr(obj, k):
-            setattr(obj, k, v)
+    update_data = data.model_dump(exclude_unset=True)
+    if 'payment_group_id' in update_data and update_data['payment_group_id'] is not None:
+        await _ensure_exists(db, PaymentGroup, update_data['payment_group_id'], "Группа оплаты не найдена")
+    if 'cluster_id' in update_data and update_data['cluster_id'] is not None:
+        await _ensure_exists(db, Cluster, update_data['cluster_id'], "Кластер не найден")
+    if 'director_id' in update_data and update_data['director_id'] is not None:
+        await _ensure_exists(db, User, update_data['director_id'], "Директор не найден")
+    for k, v in update_data.items():
+        setattr(obj, k, v)
     await db.commit()
     return obj
 
@@ -100,11 +136,25 @@ async def get_groups(db: AsyncSession = Depends(get_db)):
     return res.scalars().all()
 
 @router.post("/payment_groups")
-async def create_group(data: dict, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
-    new_obj = PaymentGroup(name=data['name'])
+async def create_group(data: PaymentGroupCreate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
+    new_obj = PaymentGroup(name=data.name, is_active=data.is_active)
     db.add(new_obj)
     await db.commit()
+    await db.refresh(new_obj)
     return new_obj
+
+@router.put("/payment_groups/{id}")
+async def update_group(id: UUID, data: PaymentGroupUpdate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
+    obj = await db.get(PaymentGroup, id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Группа оплаты не найдена")
+    update_data = data.model_dump(exclude_unset=True)
+    if 'name' in update_data and update_data['name'] is not None:
+        obj.name = update_data['name']
+    if 'is_active' in update_data and update_data['is_active'] is not None:
+        obj.is_active = update_data['is_active']
+    await db.commit()
+    return obj
 
 @router.delete("/payment_groups/{id}")
 async def delete_group(id: UUID, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_delete"))):
@@ -130,8 +180,8 @@ async def get_direction_categories(db: AsyncSession = Depends(get_db)):
     return res.scalars().all()
 
 @router.post("/direction_categories")
-async def create_direction_category(data: dict, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
-    new_obj = DirectionCategory(name=data['name'])
+async def create_direction_category(data: DirectionCategoryCreate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
+    new_obj = DirectionCategory(name=data.name)
     db.add(new_obj)
     try:
         await db.commit()
@@ -142,11 +192,12 @@ async def create_direction_category(data: dict, db: AsyncSession = Depends(get_d
         raise HTTPException(status_code=400, detail="Категория с таким названием уже существует")
 
 @router.put("/direction_categories/{id}")
-async def update_direction_category(id: UUID, data: dict, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
+async def update_direction_category(id: UUID, data: DirectionCategoryUpdate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
     obj = await db.get(DirectionCategory, id)
     if not obj:
         raise HTTPException(status_code=404, detail="Категория не найдена")
-    obj.name = data.get('name', obj.name)
+    if data.name is not None:
+        obj.name = data.name
     await db.commit()
     await db.refresh(obj)
     return obj
@@ -169,8 +220,10 @@ async def get_directions(db: AsyncSession = Depends(get_db)):
     return res.scalars().all()
 
 @router.post("/directions")
-async def create_direction(data: dict, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
-    new_obj = Direction(name=data['name'], category_id=data.get('category_id'))
+async def create_direction(data: DirectionCreate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
+    if data.category_id is not None:
+        await _ensure_exists(db, DirectionCategory, data.category_id, "Категория ЦФО не найдена")
+    new_obj = Direction(name=data.name, category_id=data.category_id, is_active=data.is_active)
     db.add(new_obj)
     await db.commit()
     res = await db.execute(
@@ -179,17 +232,22 @@ async def create_direction(data: dict, db: AsyncSession = Depends(get_db), c=Dep
     return res.scalar_one()
 
 @router.put("/directions/{id}")
-async def update_direction(id: UUID, data: dict, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
+async def update_direction(id: UUID, data: DirectionUpdate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
     res = await db.execute(
         select(Direction).options(selectinload(Direction.category)).where(Direction.id == id)
     )
     obj = res.scalar_one_or_none()
     if not obj:
         raise HTTPException(status_code=404, detail="ЦФО не найдено")
-    if 'name' in data:
-        obj.name = data['name']
-    if 'category_id' in data:
-        obj.category_id = data.get('category_id')
+    update_data = data.model_dump(exclude_unset=True)
+    if 'category_id' in update_data and update_data['category_id'] is not None:
+        await _ensure_exists(db, DirectionCategory, update_data['category_id'], "Категория ЦФО не найдена")
+    if 'name' in update_data and update_data['name'] is not None:
+        obj.name = update_data['name']
+    if 'category_id' in update_data:
+        obj.category_id = update_data['category_id']
+    if 'is_active' in update_data and update_data['is_active'] is not None:
+        obj.is_active = update_data['is_active']
     await db.commit()
     await db.refresh(obj)
     res2 = await db.execute(
@@ -223,30 +281,33 @@ async def get_roles(db: AsyncSession = Depends(get_db)):
     return res.scalars().all()
 
 @router.post("/roles")
-async def create_role(data: dict, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("user_edit"))):
-    new_role = Role(name=data['name'], label=data['label'], color=data.get('color', 'blue'))
+async def create_role(data: RoleCreate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("user_edit"))):
+    # is_superadmin намеренно НЕ принимается из тела — создать god-mode роль через API нельзя.
+    new_role = Role(name=data.name, label=data.label, color=data.color or 'blue')
     db.add(new_role)
     await db.commit()
     return new_role
 
 @router.put("/roles/{id}")
-async def update_role_basic(id: UUID, data: dict, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("user_edit"))):
+async def update_role_basic(id: UUID, data: RoleBasicUpdate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("user_edit"))):
     role = await db.get(Role, id)
-    if not role: 
+    if not role:
         raise HTTPException(status_code=404, detail="Роль не найдена")
-    role.label = data.get('label', role.label)
-    role.color = data.get('color', role.color)
+    if data.label is not None:
+        role.label = data.label
+    if data.color is not None:
+        role.color = data.color
     await db.commit()
     return role
 
 @router.put("/roles/{id}/permissions")
-async def update_role_perms(id: UUID, data: dict, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("user_edit"))):
+async def update_role_perms(id: UUID, data: RolePermissionsUpdate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("user_edit"))):
     result = await db.execute(select(Role).options(selectinload(Role.permissions)).where(Role.id == id))
     role = result.scalar_one_or_none()
-    if not role or role.is_superadmin: 
+    if not role or role.is_superadmin:
         raise HTTPException(status_code=400, detail="Нельзя изменять права суперадмина")
-    
-    perm_names = data.get("permissions", [])
+
+    perm_names = data.permissions
     perms_res = await db.execute(select(Permission).where(Permission.name.in_(perm_names)))
     role.permissions = perms_res.scalars().all()
     await db.commit()
@@ -300,8 +361,9 @@ async def get_budget_items(active_only: bool = False, db: AsyncSession = Depends
     return result.scalars().all()
 
 @router.post("/budget_items")
-async def create_budget_item(data: dict, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
-    new_obj = BudgetItem(name=data['name'], category=data['category'], is_active=data.get('is_active', True))
+async def create_budget_item(data: BudgetItemCreate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
+    # category — Enum BudgetItemCategory; в БД храним строковое значение.
+    new_obj = BudgetItem(name=data.name, category=data.category.value, is_active=data.is_active)
     db.add(new_obj)
     try:
         await db.commit()
@@ -312,13 +374,18 @@ async def create_budget_item(data: dict, db: AsyncSession = Depends(get_db), c=D
         raise HTTPException(status_code=400, detail="Статья ДДС с таким названием уже существует")
 
 @router.put("/budget_items/{id}")
-async def update_budget_item(id: UUID, data: dict, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
+async def update_budget_item(id: UUID, data: BudgetItemUpdate, db: AsyncSession = Depends(get_db), c=Depends(PermissionChecker("dict_edit"))):
     obj = await db.get(BudgetItem, id)
     if not obj:
         raise HTTPException(status_code=404, detail="Статья ДДС не найдена")
-    for k, v in data.items():
-        if hasattr(obj, k):
-            setattr(obj, k, v)
+    update_data = data.model_dump(exclude_unset=True)
+    if 'name' in update_data and update_data['name'] is not None:
+        obj.name = update_data['name']
+    if 'category' in update_data and update_data['category'] is not None:
+        cat = update_data['category']
+        obj.category = cat.value if hasattr(cat, 'value') else cat
+    if 'is_active' in update_data and update_data['is_active'] is not None:
+        obj.is_active = update_data['is_active']
     try:
         await db.commit()
         return obj
