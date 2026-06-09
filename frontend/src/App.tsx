@@ -11,6 +11,7 @@ import OrganizationsPage from './pages/Organizations';
 import CalendarPage from './pages/CalendarPage';
 import PaymentRegistry from './pages/PaymentRegistry';
 import CashierWorkspace from './pages/CashierWorkspace';
+import NotificationsPage from './pages/NotificationsPage';
 
 import { useAuthStore } from './store/authStore';
 
@@ -112,7 +113,21 @@ const NotificationBell: React.FC = () => {
       trigger={['click']}
       placement="bottomRight"
       popupRender={(menu) => (
-        <div style={{ maxHeight: 400, overflowY: 'auto', width: 360 }}>{menu}</div>
+        <div style={{ width: 360, background: '#fff', borderRadius: 8, boxShadow: '0 6px 16px rgba(0,0,0,0.12)' }}>
+          <div style={{ maxHeight: 400, overflowY: 'auto' }}>{menu}</div>
+          <div style={{ borderTop: '1px solid #f0f0f0', padding: '8px 12px', textAlign: 'center' }}>
+            <Button
+              type="link"
+              size="small"
+              onClick={() => {
+                setOpen(false);
+                navigate('/notifications');
+              }}
+            >
+              Все уведомления →
+            </Button>
+          </div>
+        </div>
       )}
     >
       <Badge count={count} size="small" offset={[-2, 2]}>
@@ -189,6 +204,11 @@ const MainLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                 icon: <DashboardOutlined />,
                 label: <Link to="/dashboard">Реестр платежей</Link>,
               },
+              {
+                key: '/notifications',
+                icon: <BellOutlined />,
+                label: <Link to="/notifications">Уведомления</Link>,
+              },
               ...(hasPerm('cashier_workspace_view') ? [{
                 key: '/cashier',
                 icon: <DollarOutlined />,
@@ -230,6 +250,7 @@ const App: React.FC = () => {
           <Routes>
             <Route path="/login" element={<LoginPage />} />
             <Route path="/dashboard" element={<ProtectedRoute><MainLayout><PaymentRegistry /></MainLayout></ProtectedRoute>} />
+            <Route path="/notifications" element={<ProtectedRoute><MainLayout><NotificationsPage /></MainLayout></ProtectedRoute>} />
             <Route path="/cashier" element={<PermissionRoute permissions={['cashier_workspace_view']}><MainLayout><CashierWorkspace /></MainLayout></PermissionRoute>} />
             <Route path="/organizations" element={<PermissionRoute permissions={['dict_view']}><MainLayout><OrganizationsPage /></MainLayout></PermissionRoute>} />
             <Route path="/calendar" element={<PermissionRoute permissions={['cal_view']}><MainLayout><CalendarPage /></MainLayout></PermissionRoute>} />

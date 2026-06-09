@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from uuid import UUID
 from typing import Optional, Iterable
 
@@ -77,14 +77,36 @@ async def get_unread_notifications(db: AsyncSession, user_id: UUID):
     return res.scalars().all()
 
 
-async def get_all_notifications(db: AsyncSession, user_id: UUID, limit: int = 50):
+async def get_all_notifications(
+    db: AsyncSession, user_id: UUID, limit: int = 50, offset: int = 0
+):
     res = await db.execute(
         select(Notification)
         .where(Notification.user_id == user_id)
         .order_by(Notification.created_at.desc())
         .limit(limit)
+        .offset(offset)
     )
     return res.scalars().all()
+
+
+async def get_notifications_summary(db: AsyncSession, user_id: UUID) -> dict:
+    """Возвращает счётчики уведомлений пользователя: всего и непрочитанных.
+    Использует эффективные count-запросы вместо загрузки строк."""
+    total = await db.scalar(
+        select(func.count())
+        .select_from(Notification)
+        .where(Notification.user_id == user_id)
+    )
+    unread = await db.scalar(
+        select(func.count())
+        .select_from(Notification)
+        .where(
+            Notification.user_id == user_id,
+            Notification.is_read == False,  # noqa: E712
+        )
+    )
+    return {"total": int(total or 0), "unread": int(unread or 0)}
 
 
 async def mark_read(db: AsyncSession, notification_id: UUID, user_id: UUID) -> bool:

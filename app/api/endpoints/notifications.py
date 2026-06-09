@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel
 from uuid import UUID
@@ -28,12 +28,27 @@ class UnreadCountOut(BaseModel):
     count: int
 
 
+class NotificationsSummaryOut(BaseModel):
+    total: int
+    unread: int
+
+
 @router.get("/", response_model=List[NotificationOut])
 async def get_notifications(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("req_view_own")),
 ):
-    return await notif_svc.get_all_notifications(db, current_user.id)
+    return await notif_svc.get_all_notifications(db, current_user.id, limit, offset)
+
+
+@router.get("/summary", response_model=NotificationsSummaryOut)
+async def get_notifications_summary(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(PermissionChecker("req_view_own")),
+):
+    return await notif_svc.get_notifications_summary(db, current_user.id)
 
 
 @router.get("/unread_count", response_model=UnreadCountOut)
