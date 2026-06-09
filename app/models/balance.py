@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import Column, Date, DateTime, Float, ForeignKey, String, Boolean, UniqueConstraint, Index
+from sqlalchemy import Column, Date, DateTime, Numeric, ForeignKey, String, Boolean, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -37,7 +37,7 @@ class DailyAccountBalance(Base):
     balance_date = Column(Date, nullable=False)
     organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False)
     bank_account_id = Column(UUID(as_uuid=True), ForeignKey("bank_accounts.id"), nullable=False)
-    amount = Column(Float, nullable=False)
+    amount = Column(Numeric(18, 2), nullable=False)
     created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     updated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, nullable=False, default=get_gmt3_time)

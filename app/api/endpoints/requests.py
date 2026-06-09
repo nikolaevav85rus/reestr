@@ -70,9 +70,17 @@ async def get_gate_preview(
     if payment_date == now_msk.date() and now_msk.hour >= SUBMIT_CUTOFF_HOUR:
         reasons.append(f"Заявка подана после {SUBMIT_CUTOFF_HOUR}:00 МСК ({now_msk.strftime('%H:%M')})")
 
+    require_coverage = app_settings.GATE_REQUIRE_CALENDAR_COVERAGE
+
     org_res = await db.execute(select(Organization).where(Organization.id == organization_id))
     org = org_res.scalar_one_or_none()
-    if org and org.payment_group_id:
+    if not (org and org.payment_group_id):
+        # Fail-closed: без платёжной группы матрицу ДДС применить нельзя.
+        if require_coverage:
+            reasons.append(
+                "У организации не настроена платёжная группа — требуется подтверждение шлюза"
+            )
+    else:
         cal_res = await db.execute(
             select(PaymentCalendar).where(
                 PaymentCalendar.date == payment_date,
@@ -80,7 +88,13 @@ async def get_gate_preview(
             )
         )
         cal_day = cal_res.scalar_one_or_none()
-        if cal_day and cal_day.day_type != "PAYMENT":
+        if cal_day is None:
+            # Fail-closed: дата не покрыта платёжным календарём.
+            if require_coverage:
+                reasons.append(
+                    f"Дата оплаты {payment_date} не покрыта платёжным календарём — требуется подтверждение шлюза"
+                )
+        elif cal_day.day_type != "PAYMENT":
             budget_res = await db.execute(select(BudgetItem).where(BudgetItem.id == budget_item_id))
             budget_item = budget_res.scalar_one_or_none()
             allowed = False

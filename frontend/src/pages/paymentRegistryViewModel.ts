@@ -154,5 +154,10 @@ export function getPaymentTotalsByOrganization<T extends RegistryRequestBase>(
     if (paymentStatus === 'CANCELLED') continue;
     totals[request.organization_id] = (totals[request.organization_id] ?? 0) + Number(request.amount ?? 0);
   }
+  // Round each accumulated total to 2 decimals so float artifacts from summing
+  // many amounts don't bleed into the liquidity (Профицит/Дефицит) comparison.
+  for (const orgId of Object.keys(totals)) {
+    totals[orgId] = Math.round(totals[orgId] * 100) / 100;
+  }
   return totals;
 }

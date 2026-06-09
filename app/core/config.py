@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     APP_TIMEZONE: str = "Europe/Moscow"
     SUBMIT_CUTOFF_HOUR: int = 11
+    # Регуляторный шлюз приёма заявок (fail-closed).
+    # True  — при отсутствии данных календаря (нет платёжной группы у
+    #         организации или нет строки PaymentCalendar на дату оплаты)
+    #         заявка направляется на ручное подтверждение шлюза (PENDING_GATE).
+    # False — старое поведение fail-open: при отсутствии данных заявка
+    #         проходит шлюз без замечаний (обратимый безопасный откат).
+    GATE_REQUIRE_CALENDAR_COVERAGE: bool = True
     UPLOAD_MAX_SIZE_MB: int = 10
     UPLOAD_ALLOWED_EXTENSIONS: list[str] = Field(
         default_factory=lambda: [".pdf", ".jpg", ".jpeg", ".png"]
@@ -92,6 +99,31 @@ class Settings(BaseSettings):
     def validate_submit_cutoff_hour(cls, value: int):
         if not (0 <= value <= 23):
             raise ValueError("SUBMIT_CUTOFF_HOUR must be in range 0..23")
+        return value
+
+    @field_validator("SECRET_KEY")
+    @classmethod
+    def validate_secret_key(cls, value: str):
+        if not value:
+            raise ValueError("SECRET_KEY must not be empty")
+        if len(value) < 32:
+            raise ValueError("SECRET_KEY must be at least 32 characters long")
+        placeholders = (
+            "change-me",
+            "change-me-in-production",
+            "changeme",
+            "super_secret_key_for_pilot_change_later",
+            "secret",
+            "your-secret-key",
+        )
+        lowered = value.lower()
+        for placeholder in placeholders:
+            if placeholder in lowered:
+                raise ValueError(
+                    "SECRET_KEY contains a known placeholder value; "
+                    "set a strong, unique key (e.g. python -c "
+                    "\"import secrets; print(secrets.token_urlsafe(64))\")"
+                )
         return value
 
     class Config:

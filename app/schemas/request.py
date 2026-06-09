@@ -1,6 +1,7 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 from uuid import UUID
 from datetime import datetime, date
+from decimal import Decimal
 from typing import Optional
 
 
@@ -38,7 +39,7 @@ class UserBrief(BaseModel):
 # --- Входные схемы ---
 
 class RequestCreate(BaseModel):
-    amount: float
+    amount: Decimal = Field(ge=0)
     description: str
     note: Optional[str] = None
     payment_date: date
@@ -52,7 +53,7 @@ class RequestCreate(BaseModel):
     priority: Optional[str] = None
 
 class RequestUpdate(BaseModel):
-    amount: Optional[float] = None
+    amount: Optional[Decimal] = Field(default=None, ge=0)
     description: Optional[str] = None
     note: Optional[str] = None
     payment_date: Optional[date] = None
@@ -83,7 +84,7 @@ class GatePreviewResponse(BaseModel):
 class RequestResponse(BaseModel):
     id: UUID
     request_number: Optional[str] = None
-    amount: float
+    amount: Decimal
     description: str
     note: Optional[str] = None
     payment_date: Optional[date] = None
@@ -114,5 +115,11 @@ class RequestResponse(BaseModel):
     budget_item: Optional[BudgetItemBrief] = None
     creator: Optional[UserBrief] = None
     gate_approver: Optional[UserBrief] = None
+
+    @field_serializer("amount")
+    def _serialize_amount(self, value: Decimal) -> float:
+        # Frontend performs arithmetic on amount, so keep it a numeric JSON
+        # value instead of Pydantic v2's default quoted-string Decimal output.
+        return float(value)
 
     model_config = ConfigDict(from_attributes=True)

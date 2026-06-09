@@ -1,8 +1,9 @@
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_serializer
 
 
 class OrganizationBrief(BaseModel):
@@ -49,13 +50,13 @@ class DailyAccountBalanceUpsert(BaseModel):
     balance_date: date
     organization_id: UUID
     bank_account_id: UUID
-    amount: float
+    amount: Decimal = Field(ge=0)
 
 
 class DailyAccountBalanceUpdate(BaseModel):
     balance_date: date
     bank_account_id: UUID
-    amount: float
+    amount: Decimal = Field(ge=0)
 
 
 class BankAccountBrief(BaseModel):
@@ -72,7 +73,7 @@ class DailyAccountBalanceResponse(BaseModel):
     balance_date: date
     organization_id: UUID
     bank_account_id: UUID
-    amount: float
+    amount: Decimal
     created_by_id: UUID
     updated_by_id: UUID
     created_at: datetime
@@ -86,6 +87,14 @@ class DailyAccountBalanceResponse(BaseModel):
     @computed_field
     @property
     def opening_balance(self) -> float:
-        return self.amount
+        # Frontend reads opening_balance/amount as numbers, so expose a float
+        # to keep the JSON contract numeric (not a quoted Decimal string).
+        return float(self.amount)
+
+    @field_serializer("amount")
+    def _serialize_amount(self, value: Decimal) -> float:
+        # Frontend performs arithmetic on amount, so keep it a numeric JSON
+        # value instead of Pydantic v2's default quoted-string Decimal output.
+        return float(value)
 
     model_config = ConfigDict(from_attributes=True)

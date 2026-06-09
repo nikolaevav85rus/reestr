@@ -1,6 +1,6 @@
 import uuid
 import enum
-from sqlalchemy import Column, String, Float, DateTime, Date, ForeignKey, Boolean, Text
+from sqlalchemy import Column, String, Numeric, DateTime, Date, ForeignKey, Boolean, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone, timedelta
@@ -33,7 +33,7 @@ class PaymentRequest(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     request_number = Column(String(30), nullable=True, unique=True)
-    amount = Column(Float, nullable=False)
+    amount = Column(Numeric(18, 2), nullable=False)
     description = Column(String, nullable=False)
     created_at = Column(DateTime, default=get_gmt3_time)
     payment_date = Column(Date, nullable=True) 

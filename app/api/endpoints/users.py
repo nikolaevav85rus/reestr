@@ -92,8 +92,16 @@ async def create_user(
     )
     db.add(new_user)
     await db.commit()
-    await db.refresh(new_user)
-    return new_user
+
+    # Перечитываем пользователя с явной подгрузкой роли и ЦФО,
+    # чтобы безопасно сериализовать без раскрытия hashed_password.
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.role), selectinload(User.direction))
+        .where(User.id == new_user.id)
+    )
+    created_user = result.scalar_one()
+    return _serialize_user_safe(created_user)
 
 @router.put("/{user_id}")
 async def update_user(
@@ -123,9 +131,18 @@ async def update_user(
         if data['is_active'] is False and str(user_id) == str(current_user.id):
             raise HTTPException(status_code=400, detail="Нельзя заблокировать собственный аккаунт")
         user.is_active = data['is_active']
-    
+
     await db.commit()
-    return user
+
+    # Перечитываем пользователя с явной подгрузкой роли и ЦФО,
+    # чтобы безопасно сериализовать без раскрытия hashed_password.
+    result = await db.execute(
+        select(User)
+        .options(selectinload(User.role), selectinload(User.direction))
+        .where(User.id == user_id)
+    )
+    updated_user = result.scalar_one()
+    return _serialize_user_safe(updated_user)
 
 @router.patch("/{user_id}/active")
 async def toggle_user_active(

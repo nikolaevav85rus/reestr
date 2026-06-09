@@ -360,7 +360,7 @@ const AccountBalancesPanel: React.FC<Props> = ({
         organizationId: orgId,
         organizationName: value.name,
         isGroup: true,
-        groupTotal: value.rows.reduce((sum, row) => sum + (row.openingBalance ?? 0), 0),
+        groupTotal: Math.round(value.rows.reduce((sum, row) => sum + (row.openingBalance ?? 0), 0) * 100) / 100,
         children: [...value.rows].sort((a, b) => (b.balanceDate ?? '').localeCompare(a.balanceDate ?? '')),
       }));
   }, [flatRows]);
@@ -404,7 +404,9 @@ const AccountBalancesPanel: React.FC<Props> = ({
   const renderGroupTitle = (row: BalanceRow) => {
     const total = row.groupTotal ?? 0;
     const paymentTotal = paymentTotalsByOrganization[row.organizationId] ?? 0;
-    const liquidity = total - paymentTotal;
+    // Round before the >= 0 comparison so a sub-kopeck float artifact can't
+    // flip the Профицит/Дефицит tag.
+    const liquidity = Math.round((total - paymentTotal) * 100) / 100;
 
     return (
       <Space size={10} wrap style={{ width: '100%', justifyContent: 'space-between' }}>

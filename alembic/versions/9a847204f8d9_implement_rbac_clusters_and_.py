@@ -28,14 +28,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint('id'),
         sa.UniqueConstraint('name')
     )
-    op.create_table('permissions',
-        sa.Column('id', sa.UUID(), nullable=False),
-        sa.Column('name', sa.String(), nullable=False),
-        sa.Column('label', sa.String(), nullable=False),
-        sa.Column('category', sa.String(), nullable=False),
-        sa.PrimaryKeyConstraint('id'),
-        sa.UniqueConstraint('name')
-    )
     op.create_table('substitutions',
         sa.Column('id', sa.UUID(), nullable=False),
         sa.Column('absent_user_id', sa.UUID(), nullable=False),
@@ -47,13 +39,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(['absent_user_id'], ['users.id'], ),
         sa.ForeignKeyConstraint(['substitute_user_id'], ['users.id'], ),
         sa.PrimaryKeyConstraint('id')
-    )
-    op.create_table('role_permissions',
-        sa.Column('role_id', sa.UUID(), nullable=False),
-        sa.Column('permission_id', sa.UUID(), nullable=False),
-        sa.ForeignKeyConstraint(['permission_id'], ['permissions.id'], ondelete='CASCADE'),
-        sa.ForeignKeyConstraint(['role_id'], ['roles.id'], ondelete='CASCADE'),
-        sa.PrimaryKeyConstraint('role_id', 'permission_id')
     )
 
     # --- 2. Обновление существующих таблиц ---
@@ -91,7 +76,5 @@ def downgrade() -> None:
     )
     
     op.drop_column('roles', 'is_superadmin')
-    op.drop_table('role_permissions')
     op.drop_table('substitutions')
-    op.drop_table('permissions')
     op.drop_table('clusters')
