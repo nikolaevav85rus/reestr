@@ -28,6 +28,23 @@ USER = "initiator1"
 PASSWORD = "1234"
 
 
+def _digits(s):
+    import re
+    return re.sub(r"\D", "", str(s or ""))
+
+
+def build_org_map():
+    """{нормализованный ИНН -> название организации-плательщика} из справочника."""
+    token = login()
+    r = httpx.get(f"{BASE}/dict/organizations", headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    r.raise_for_status()
+    m = {}
+    for o in r.json():
+        if o.get("inn"):
+            m[_digits(o["inn"])] = o.get("name")
+    return m
+
+
 def discover():
     files = []
     for root, _dirs, names in os.walk(INVOICES_DIR):
@@ -114,7 +131,7 @@ async def main():
             if i % 5 == 0:
                 json.dump(results, open(RESULTS_JSON, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     json.dump(results, open(RESULTS_JSON, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-    _report(results)
+    _report(results, build_org_map())
     _summary(results)
 
 
@@ -140,18 +157,25 @@ def _esc(s):
     return ("" if s is None else str(s)).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _report(results):
+def _report(results, org_map=None):
+    org_map = org_map or {}
     rows = []
+    matched = 0
     for r in sorted(results, key=lambda x: (x.get("folder", ""), x.get("file", ""))):
         cls = "ok" if r.get("ok") else "err"
         inv = r.get("is_invoice")
         invcell = "—" if inv is None else ("✅" if inv else "❌ не счёт")
         warn = "; ".join(r.get("warnings") or [])
+        our_org = org_map.get(_digits(r.get("buyer_inn")))
+        if our_org:
+            matched += 1
+        org_cell = _esc(our_org) if our_org else "<span style='color:#cf1322'>— не найдена</span>"
         rows.append(
             f"<tr class='{cls}'><td>{_esc(r.get('file'))}</td>"
             f"<td>{invcell}<br><small>{_esc(r.get('document_type'))}</small></td>"
+            f"<td><b>{org_cell}</b><br><small>ИНН пок.: {_esc(r.get('buyer_inn'))}</small></td>"
             f"<td class='r'>{_esc(r.get('amount'))}</td>"
-            f"<td>{_esc(r.get('counterparty'))}<br><small>ИНН пост.: {_esc(r.get('supplier_inn'))} / пок.: {_esc(r.get('buyer_inn'))}</small></td>"
+            f"<td>{_esc(r.get('counterparty'))}<br><small>ИНН пост.: {_esc(r.get('supplier_inn'))}</small></td>"
             f"<td>{_esc(r.get('payment_purpose'))}</td>"
             f"<td>{_esc(r.get('summary'))}</td>"
             f"<td>{_esc(r.get('requirement'))}</td>"
@@ -164,8 +188,8 @@ def _report(results):
         "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:6px;vertical-align:top}"
         "th{position:sticky;top:0;background:#1677ff;color:#fff}tr.err{background:#fff1f0}small{color:#888}"
         ".r{text-align:right;white-space:nowrap}.w{color:#cf1322;max-width:240px}</style>"
-        "<h2>OCR backtest — " + str(len(results)) + " файлов</h2>"
-        "<table><thead><tr><th>Файл</th><th>Тип</th><th>Сумма</th><th>Контрагент</th>"
+        "<h2>OCR backtest — " + str(len(results)) + " файлов; организация-плательщик подобрана по ИНН: " + str(matched) + "</h2>"
+        "<table><thead><tr><th>Файл</th><th>Тип</th><th>Наша орг. (плательщик)</th><th>Сумма</th><th>Контрагент</th>"
         "<th>Назначение платежа</th><th>Описание</th><th>Требование</th><th>Conf</th><th>Замечания/ошибка</th></tr></thead>"
         "<tbody>" + "".join(rows) + "</tbody></table>"
     )
@@ -174,4 +198,10 @@ def _report(results):
 
 
 if __name__ == "__main__":
+    # --report: перегенерировать report.html из существующих results.json (без вызовов OCR)
+    if len(sys.argv) > 1 and sys.argv[1] == "--report":
+        _results = json.load(open(RESULTS_JSON, encoding="utf-8"))
+        _report(_results, build_org_map())
+        _summary(_results)
+        sys.exit(0)
     sys.exit(asyncio.run(main()))
