@@ -832,15 +832,7 @@ const PaymentRegistry: React.FC = () => {
       if (prefill.note != null) fieldsToSet.note = prefill.note;
       if (Object.keys(fieldsToSet).length > 0) form.setFieldsValue(fieldsToSet);
 
-      // Прикрепляем распознанный файл в состояние формы, чтобы он
-      // загрузился при сохранении (handleFormSubmit читает originFileObj).
-      setFileList([{
-        uid: '-1',
-        name: file.name,
-        status: 'done' as const,
-        originFileObj: file as unknown as UploadFile['originFileObj'],
-      }]);
-
+      // Файл уже прикреплён пользователем в поле «Файл» — повторно не трогаем.
       setOcrResult({
         requirement: prefill.payment_purpose_requirement ?? null,
         warnings,
@@ -2037,16 +2029,23 @@ const PaymentRegistry: React.FC = () => {
             >
               <Space orientation="vertical" size={8} style={{ width: '100%' }}>
                 <Space wrap align="center" size={12}>
-                  <Upload
-                    maxCount={1}
-                    showUploadList={false}
-                    accept=".pdf,.jpg,.jpeg,.png"
-                    beforeUpload={(file) => { void handleOcrRecognize(file as File); return false; }}
+                  <Button
+                    icon={<FileSearchOutlined />}
+                    loading={ocrLoading}
+                    disabled={!fileList.some(f => f.originFileObj)}
+                    onClick={() => {
+                      const attached = fileList.find(f => f.originFileObj)?.originFileObj;
+                      if (!attached) {
+                        messageApi.warning('Сначала прикрепите файл счёта в поле «Файл (скан счёта / акта)»');
+                        return;
+                      }
+                      void handleOcrRecognize(attached as File);
+                    }}
                   >
-                    <Button icon={<FileSearchOutlined />} loading={ocrLoading}>Распознать счёт</Button>
-                  </Upload>
+                    Распознать счёт
+                  </Button>
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    Загрузите счёт — поля и файл заполнятся автоматически (до минуты)
+                    Прикрепите файл счёта (поле «Файл» справа) и нажмите — поля заполнятся автоматически (до минуты)
                   </Text>
                 </Space>
                 {ocrResult && (
