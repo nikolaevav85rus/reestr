@@ -372,10 +372,10 @@ async def download_file(
     req = await request_service.get_request_by_id(db, request_id)
     if not req or not req.file_path:
         raise HTTPException(status_code=404, detail="Файл не найден")
-    # Доступ: владелец или пользователь с правом просматривать чужие заявки
-    can_view_others = has_perm(current_user, "req_view_all") or has_perm(current_user, "req_view_org") or has_perm(current_user, "req_view_cluster") or has_perm(current_user, "req_view_dept")
-    if req.creator_id != current_user.id and not can_view_others:
-        raise HTTPException(status_code=403, detail="Нет доступа к файлу")
+    # Доступ: владелец всегда; иначе — по object-level RLS (область видимости
+    # должна покрывать ИМЕННО эту заявку, а не просто наличие любого scope-права).
+    if req.creator_id != current_user.id:
+        await request_service.assert_can_view_request(db, current_user, req)
     file_path = os.path.join(get_storage_path(), req.file_path)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Файл не найден на диске")
@@ -391,6 +391,7 @@ async def approve_gate(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    await request_service.assert_can_view_request(db, current_user, req)
     _ensure_not_marked(req)
     if req.approval_status != ApprovalStatus.PENDING_GATE:
         raise HTTPException(status_code=400, detail="Заявка не ожидает разрешения шлюза")
@@ -416,6 +417,7 @@ async def reject_gate(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    await request_service.assert_can_view_request(db, current_user, req)
     _ensure_not_marked(req)
     if req.approval_status != ApprovalStatus.PENDING_GATE:
         raise HTTPException(status_code=400, detail="Заявка не ожидает разрешения шлюза")
@@ -438,6 +440,7 @@ async def set_contract_status(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    await request_service.assert_can_view_request(db, current_user, req)
     _ensure_not_marked(req)
     old_contract = req.contract_status
     req.contract_status = data.get("contract_status", req.contract_status)
@@ -457,6 +460,10 @@ async def approve_memo(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    # NB: object-level RLS НЕ применяется здесь намеренно. Роль DIRECTOR держит
+    # memo_approve, но из областей видимости — только req_view_org (не req_view_all).
+    # Жёсткое требование «директор = director_id организации заявки» сломало бы
+    # зелёный workflow-набор (memo-сценарии между орг). Оставлено permission-only.
     _ensure_not_marked(req)
     if req.approval_status != ApprovalStatus.PENDING_MEMO:
         raise HTTPException(status_code=400, detail="Заявка не ожидает согласования по бюджету")
@@ -479,6 +486,8 @@ async def reject_memo(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    # NB: object-level RLS НЕ применяется здесь намеренно (см. approve_memo).
+    # DIRECTOR держит memo_approve, но без req_view_all → permission-only.
     _ensure_not_marked(req)
     if req.approval_status != ApprovalStatus.PENDING_MEMO:
         raise HTTPException(status_code=400, detail="Заявка не ожидает согласования по бюджету")
@@ -587,6 +596,7 @@ async def set_budget_status(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    await request_service.assert_can_view_request(db, current_user, req)
     _ensure_not_marked(req)
     new_value = data.get("is_budgeted", req.is_budgeted)
     req.is_budgeted = new_value
@@ -617,6 +627,7 @@ async def set_special_order(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    await request_service.assert_can_view_request(db, current_user, req)
     _ensure_not_marked(req)
     old_special = req.special_order
     req.special_order = data.get("special_order", req.special_order)
@@ -635,6 +646,7 @@ async def suspend_request(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    await request_service.assert_can_view_request(db, current_user, req)
     _ensure_not_marked(req)
     if req.approval_status not in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}:
         raise HTTPException(status_code=400, detail="Отложить можно только заявку на согласовании или согласованную заявку")
@@ -659,6 +671,7 @@ async def unsuspend_request(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    await request_service.assert_can_view_request(db, current_user, req)
     _ensure_not_marked(req)
     if req.approval_status != ApprovalStatus.SUSPENDED:
         raise HTTPException(status_code=400, detail="Заявка не отложена")
@@ -718,6 +731,10 @@ async def get_request_history(
     Формат ответа сохранён для совместимости с фронтендом (вкладка «История»):
     список объектов {id, type, text, created_at}.
     """
+    req = await request_service.get_request_by_id(db, request_id)
+    if not req:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    await request_service.assert_can_view_request(db, current_user, req)
     res = await db.execute(
         select(AuditLog)
         .where(AuditLog.entity_name == "PaymentRequest")
@@ -756,6 +773,10 @@ async def get_request_audit(
     current_user: User = Depends(PermissionChecker("req_view_own")),
 ):
     """Журнал аудита по заявке (записи AuditLog с резолвом ФИО автора)."""
+    req = await request_service.get_request_by_id(db, request_id)
+    if not req:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    await request_service.assert_can_view_request(db, current_user, req)
     res = await db.execute(
         select(AuditLog)
         .where(AuditLog.entity_name == "PaymentRequest")
@@ -822,6 +843,7 @@ async def postpone_request(
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    await request_service.assert_can_view_request(db, current_user, req)
     _ensure_not_marked(req)
     old_status = req.approval_status.value if isinstance(req.approval_status, ApprovalStatus) else str(req.approval_status)
     old_date = req.payment_date

@@ -156,6 +156,64 @@ async def get_request_by_id(db: AsyncSession, request_id: UUID) -> Optional[Paym
     return result.scalars().first()
 
 
+def _user_perms(user: User) -> set:
+    """Множество кодов прав пользователя (без учёта superadmin)."""
+    if user.role and user.role.permissions:
+        return {p.name for p in user.role.permissions}
+    return set()
+
+
+async def user_can_view_request(db: AsyncSession, user: User, req: PaymentRequest) -> bool:
+    """Может ли пользователь видеть конкретную заявку (object-level RLS).
+
+    Реализует OR по ВСЕМ выданным областям видимости (в отличие от if/elif
+    в списочной выборке): пользователь с несколькими областями получает их
+    объединение, а не только «высшую».
+
+    Эффективность: req.organization уже eager-loaded через _with_relations(),
+    поэтому проверки org/dept/own не делают доп. запросов. Для проверки
+    «руководитель кластера» нужен один маленький запрос head_id кластера
+    организации (только если это право выдано и более ранние не прошли).
+    """
+    # superadmin / req_view_all → всё
+    if user.role and getattr(user.role, "is_superadmin", False):
+        return True
+    perms = _user_perms(user)
+    if "req_view_all" in perms:
+        return True
+
+    org = req.organization  # eager-loaded
+
+    # req_view_org: пользователь — директор организации заявки
+    if "req_view_org" in perms and org is not None and org.director_id == user.id:
+        return True
+
+    # req_view_dept: заявка относится к направлению (ЦФО) пользователя
+    if "req_view_dept" in perms and user.direction_id is not None and req.direction_id == user.direction_id:
+        return True
+
+    # req_view_own: пользователь — автор заявки
+    if "req_view_own" in perms and req.creator_id == user.id:
+        return True
+
+    # req_view_cluster: организация заявки в кластере, где пользователь — руководитель.
+    # head_id кластера не eager-loaded → один точечный запрос (без N+1).
+    if "req_view_cluster" in perms and org is not None and org.cluster_id is not None:
+        head_id = await db.scalar(
+            select(Cluster.head_id).where(Cluster.id == org.cluster_id)
+        )
+        if head_id == user.id:
+            return True
+
+    return False
+
+
+async def assert_can_view_request(db: AsyncSession, user: User, req: PaymentRequest) -> None:
+    """Бросает 403, если пользователь не может видеть заявку."""
+    if not await user_can_view_request(db, user, req):
+        raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
+
+
 # Допустимые исходные статусы для целевого статуса при согласовании.
 # Применяется ко всем (включая суперадмина): недопустимые переходы состояний невозможны.
 ALLOWED_FROM = {
@@ -228,6 +286,10 @@ async def update_request_status(
     req = await get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    # Object-level RLS: актор должен иметь право ВИДЕТЬ заявку (в дополнение к
+    # праву на действие, проверенному PermissionChecker на эндпоинте).
+    if current_user is not None:
+        await assert_can_view_request(db, current_user, req)
     if req.is_marked_for_deletion:
         raise HTTPException(status_code=400, detail="Заявка помечена на удаление — действие недоступно.")
     old_status = req.approval_status
@@ -305,6 +367,10 @@ async def update_payment_status(
     req = await get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
+    # Object-level RLS: актор должен иметь право ВИДЕТЬ заявку (в дополнение к
+    # праву req_pay, проверенному PermissionChecker на эндпоинте).
+    if current_user is not None:
+        await assert_can_view_request(db, current_user, req)
     if req.is_marked_for_deletion:
         raise HTTPException(status_code=400, detail="Заявка помечена на удаление — действие недоступно.")
     # Повторная проверка под блокировкой.
