@@ -8,6 +8,7 @@
 Сервис ничего не знает про HTTP-слой приложения: он бросает OcrError с кодом
 статуса, который эндпоинт переводит в HTTPException.
 """
+import asyncio
 import json
 import logging
 
@@ -48,6 +49,45 @@ def _strip_json_fence(text: str) -> str:
     return stripped.strip()
 
 
+class _ParseError(Exception):
+    """Внутренний сигнал: ответ агента не удалось разобрать как JSON-объект.
+
+    Используется только внутри цикла повторов, наружу не выходит.
+    """
+
+
+def _parse_answer(answer) -> dict:
+    """Пытается извлечь JSON-объект из ответа агента.
+
+    Сначала снимает ограждение ```json ... ``` и парсит как есть. Если это не
+    удаётся — пытается «спасти» ответ, вырезая подстроку от первой `{` до
+    последней `}` и парся её. Бросает ``_ParseError`` только если оба способа
+    не дали JSON-объект (dict) — это и есть условие для повтора запроса.
+    """
+    candidate = _strip_json_fence(answer)
+
+    # Основная попытка: парсим очищенный от ограждения текст.
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            return parsed
+    except (ValueError, TypeError):
+        pass
+
+    # Спасательная попытка: берём подстроку от первой "{" до последней "}".
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        try:
+            parsed = json.loads(candidate[start:end + 1])
+            if isinstance(parsed, dict):
+                return parsed
+        except (ValueError, TypeError):
+            pass
+
+    raise _ParseError()
+
+
 async def recognize_invoice(file_bytes: bytes, filename: str, content_type: str) -> dict:
     """Загружает файл в evo-ai и возвращает распознанный JSON счёта (dict).
 
@@ -60,11 +100,13 @@ async def recognize_invoice(file_bytes: bytes, filename: str, content_type: str)
     base = settings.EVOAI_BASE_URL.rstrip("/")
     user = settings.EVOAI_USER
     auth_headers = {"Authorization": f"Bearer {settings.EVOAI_API_KEY}"}
-    file_type = "image" if content_type.startswith("image/") else "document"
+    # evo-ai принимает и PDF, и изображения как файл type="document"; type="image"
+    # отвергается валидацией (HTTP 400). Поэтому всегда отправляем "document".
+    file_type = "document"
 
     timeout = httpx.Timeout(settings.EVOAI_TIMEOUT_SEC)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        # --- Шаг 1: загрузка файла ---
+        # --- Шаг 1: загрузка файла (надёжна, одна попытка) ---
         try:
             upload_resp = await client.post(
                 f"{base}/files/upload",
@@ -90,7 +132,7 @@ async def recognize_invoice(file_bytes: bytes, filename: str, content_type: str)
             logger.warning("evo-ai upload response without id: %s", upload_resp.text[:500])
             raise OcrError(502, "Некорректный ответ сервиса распознавания") from exc
 
-        # --- Шаг 2: распознавание ---
+        # --- Шаг 2: распознавание (с повторами) ---
         chat_payload = {
             "inputs": {},
             "query": (
@@ -107,38 +149,65 @@ async def recognize_invoice(file_bytes: bytes, filename: str, content_type: str)
                 }
             ],
         }
-        try:
-            chat_resp = await client.post(
-                f"{base}/chat-messages",
-                headers={**auth_headers, "Content-Type": "application/json"},
-                json=chat_payload,
-            )
-        except httpx.HTTPError as exc:
-            logger.warning("evo-ai chat-messages request failed: %s", exc)
-            raise OcrError(502, "Сервис распознавания недоступен") from exc
 
-    if chat_resp.status_code // 100 != 2:
-        logger.warning(
-            "evo-ai chat-messages returned %s: %s",
-            chat_resp.status_code,
-            chat_resp.text[:500],
-        )
-        raise OcrError(502, "Ошибка сервиса распознавания")
+        max_attempts = 3
+        last_5xx_status = None  # последний апстрим-статус 5xx, чтобы вернуть его в detail
+        for attempt in range(1, max_attempts + 1):
+            if attempt > 1:
+                await asyncio.sleep(1.5 * (attempt - 1))
 
-    try:
-        answer = chat_resp.json()["answer"]
-    except (ValueError, KeyError, TypeError) as exc:
-        logger.warning("evo-ai chat-messages response without answer: %s", chat_resp.text[:500])
-        raise OcrError(502, "Не удалось разобрать ответ распознавания") from exc
+            # 2a. Запрос к chat-messages. Транспорт/таймаут -> повтор.
+            try:
+                chat_resp = await client.post(
+                    f"{base}/chat-messages",
+                    headers={**auth_headers, "Content-Type": "application/json"},
+                    json=chat_payload,
+                )
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "evo-ai chat-messages request failed (attempt %s/%s): %s",
+                    attempt, max_attempts, exc,
+                )
+                continue
 
-    try:
-        recognition = json.loads(_strip_json_fence(answer))
-    except (ValueError, TypeError) as exc:
-        logger.warning("evo-ai answer is not valid JSON: %s", str(answer)[:500])
-        raise OcrError(502, "Не удалось разобрать ответ распознавания") from exc
+            status = chat_resp.status_code
+            # 2b. 4xx — настоящая клиентская ошибка, повтор не поможет.
+            if 400 <= status < 500:
+                logger.warning(
+                    "evo-ai chat-messages returned %s: %s",
+                    status, chat_resp.text[:500],
+                )
+                raise OcrError(502, "Ошибка сервиса распознавания")
 
-    if not isinstance(recognition, dict):
-        logger.warning("evo-ai answer JSON is not an object: %r", recognition)
-        raise OcrError(502, "Не удалось разобрать ответ распознавания")
+            # 2c. 5xx — временная серверная ошибка, повтор.
+            if status >= 500:
+                last_5xx_status = status
+                logger.warning(
+                    "evo-ai chat-messages returned %s (attempt %s/%s): %s",
+                    status, attempt, max_attempts, chat_resp.text[:500],
+                )
+                continue
 
-    return recognition
+            # 2d. 2xx — пытаемся достать и разобрать answer.
+            try:
+                answer = chat_resp.json()["answer"]
+            except (ValueError, KeyError, TypeError):
+                logger.warning(
+                    "evo-ai chat-messages response without answer (attempt %s/%s): %s",
+                    attempt, max_attempts, chat_resp.text[:500],
+                )
+                continue
+
+            try:
+                return _parse_answer(answer)
+            except _ParseError:
+                logger.warning(
+                    "evo-ai answer is not valid JSON (attempt %s/%s): %s",
+                    attempt, max_attempts, str(answer)[:500],
+                )
+                continue
+
+    # Все попытки исчерпаны.
+    if last_5xx_status is not None:
+        raise OcrError(502, f"Сервис распознавания вернул ошибку (HTTP {last_5xx_status})")
+    raise OcrError(502, "Сервис распознавания вернул некорректный ответ")
