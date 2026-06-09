@@ -13,6 +13,7 @@ import {
   DollarOutlined, UploadOutlined, PaperClipOutlined,
   ClearOutlined, SendOutlined, ThunderboltOutlined, CopyOutlined,
   RestOutlined, SettingOutlined, MoreOutlined, DownloadOutlined,
+  FileSearchOutlined,
 } from '@ant-design/icons';
 import apiClient from '../api/apiClient';
 import { useAuthStore } from '../store/authStore';
@@ -572,6 +573,8 @@ const PaymentRegistry: React.FC = () => {
   const [formLoading, setFormLoading]       = useState(false);
   const [form] = Form.useForm();
   const [fileList, setFileList]             = useState<UploadFile[]>([]);
+  const [ocrLoading, setOcrLoading]         = useState(false);
+  const [ocrResult, setOcrResult]           = useState<{ requirement: string | null; warnings: string[]; confidence: number; isInvoice: boolean } | null>(null);
   const [gatePreview, setGatePreview]       = useState<GatePreview | null>(null);
   const [gatePreviewLoading, setGatePreviewLoading] = useState(false);
   const gatePreviewSeq = useRef(0);
@@ -808,6 +811,50 @@ const PaymentRegistry: React.FC = () => {
     setExpandedKeys([...orgKeys, ...dcKeys, ...catKeys]);
   }, [isGrouped, groupedData, expandLevel]);
 
+  // ─── Распознавание счёта (OCR) ──────────────────────────────────────────
+  const handleOcrRecognize = async (file: File) => {
+    setOcrResult(null);
+    setOcrLoading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const { data } = await apiClient.post('/requests/ocr_recognize', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 180000,
+      });
+      const prefill = data?.prefill ?? {};
+      const warnings: string[] = Array.isArray(data?.warnings) ? data.warnings : [];
+
+      const fieldsToSet: Record<string, unknown> = {};
+      if (prefill.amount != null) fieldsToSet.amount = prefill.amount;
+      if (prefill.counterparty != null) fieldsToSet.counterparty = prefill.counterparty;
+      if (prefill.description != null) fieldsToSet.description = prefill.description;
+      if (prefill.note != null) fieldsToSet.note = prefill.note;
+      if (Object.keys(fieldsToSet).length > 0) form.setFieldsValue(fieldsToSet);
+
+      // Прикрепляем распознанный файл в состояние формы, чтобы он
+      // загрузился при сохранении (handleFormSubmit читает originFileObj).
+      setFileList([{
+        uid: '-1',
+        name: file.name,
+        status: 'done' as const,
+        originFileObj: file as unknown as UploadFile['originFileObj'],
+      }]);
+
+      setOcrResult({
+        requirement: prefill.payment_purpose_requirement ?? null,
+        warnings,
+        confidence: typeof prefill.confidence === 'number' ? prefill.confidence : 0,
+        isInvoice: prefill.is_invoice === true,
+      });
+      messageApi.success('Счёт распознан, проверьте поля');
+    } catch (e: unknown) {
+      messageApi.error(getErrorMessage(e, 'Не удалось распознать счёт'));
+    } finally {
+      setOcrLoading(false);
+    }
+  };
+
   // ─── Сохранение формы ────────────────────────────────────────────────────
   const handleFormSubmit = async (values: any) => {
     setFormLoading(true);
@@ -850,6 +897,8 @@ const PaymentRegistry: React.FC = () => {
 
   const openEdit = (record: RequestRow) => {
     setIsCopying(false);
+    setOcrResult(null);
+    setOcrLoading(false);
     setEditingRequest(record);
     form.setFieldsValue({
       ...record,
@@ -865,6 +914,8 @@ const PaymentRegistry: React.FC = () => {
   const openCreate = () => {
     setEditingRequest(null);
     setIsCopying(false);
+    setOcrResult(null);
+    setOcrLoading(false);
     form.resetFields();
     setFileList([]);
     setIsFormOpen(false);
@@ -874,6 +925,8 @@ const PaymentRegistry: React.FC = () => {
   const openCopy = (record: RequestRow) => {
     setEditingRequest(null);  // создаём новую, не редактируем
     setIsCopying(true);
+    setOcrResult(null);
+    setOcrLoading(false);
     form.resetFields();
     form.setFieldsValue({
       organization_id: record.organization?.id ?? record.organization_id,
@@ -1970,6 +2023,59 @@ const PaymentRegistry: React.FC = () => {
             <div style={{ marginBottom: 12, color: '#8c8c8c', fontSize: 12 }}>
               Создана: {editingRequest.created_at ? new Date(editingRequest.created_at).toLocaleString('ru-RU') : '—'}
               {editingRequest.creator?.full_name && ` · ${editingRequest.creator.full_name}`}
+            </div>
+          )}
+          {!editingRequest && (
+            <div
+              style={{
+                marginBottom: 16,
+                padding: 12,
+                borderRadius: 8,
+                border: '1px solid #91caff',
+                background: '#e6f4ff',
+              }}
+            >
+              <Space orientation="vertical" size={8} style={{ width: '100%' }}>
+                <Space wrap align="center" size={12}>
+                  <Upload
+                    maxCount={1}
+                    showUploadList={false}
+                    accept=".pdf,.jpg,.jpeg,.png"
+                    beforeUpload={(file) => { void handleOcrRecognize(file as File); return false; }}
+                  >
+                    <Button icon={<FileSearchOutlined />} loading={ocrLoading}>Распознать счёт</Button>
+                  </Upload>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    Загрузите счёт — поля и файл заполнятся автоматически (до минуты)
+                  </Text>
+                </Space>
+                {ocrResult && (
+                  <Space orientation="vertical" size={8} style={{ width: '100%' }}>
+                    <Alert
+                      showIcon
+                      type="info"
+                      title={`Уверенность распознавания: ${Math.round(ocrResult.confidence * 100)}%`}
+                    />
+                    {ocrResult.requirement && (
+                      <Alert
+                        showIcon
+                        type="warning"
+                        title={`Обязательно указать в назначении платежа: ${ocrResult.requirement}`}
+                      />
+                    )}
+                    {!ocrResult.isInvoice && (
+                      <Alert
+                        showIcon
+                        type="warning"
+                        title="Документ не распознан как счёт — проверьте поля вручную"
+                      />
+                    )}
+                    {ocrResult.warnings.map((w, i) => (
+                      <Alert key={i} showIcon type="warning" title={w} />
+                    ))}
+                  </Space>
+                )}
+              </Space>
             </div>
           )}
           <Row gutter={[16, 16]}>

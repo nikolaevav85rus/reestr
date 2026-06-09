@@ -132,7 +132,7 @@ test.describe('UI regression: request workflow', () => {
     await page.locator('.ant-modal .ant-picker input').fill(paymentDate);
     await page.keyboard.press('Enter');
     await page.locator('.ant-modal textarea#description').fill(uploadMarker);
-    await page.locator('.ant-modal input[type="file"]').setInputFiles({
+    await page.locator('.ant-modal input[type="file"]').last().setInputFiles({
       name: `${uploadMarker}.pdf`,
       mimeType: 'application/pdf',
       buffer: Buffer.from('%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n'),
