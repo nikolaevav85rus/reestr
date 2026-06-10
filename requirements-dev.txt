@@ -1,0 +1,10 @@
+# Development / scripts dependencies.
+# Install on top of the core runtime deps:
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# Most scripts (seed*.py, test_balances_*.py, ocr_backtest.py) use httpx,
+# which is already a core runtime dependency (app/services/ocr_service.py).
+-r requirements.txt
+
+# Used by scripts/run_tests.py and scripts/test_upload_validation_smoke.py
+requests==2.33.1

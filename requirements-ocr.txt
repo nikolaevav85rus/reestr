@@ -1,0 +1,13 @@
+# Legacy OCR proof-of-concept dependencies.
+#
+# These are NOT used by the application at runtime. Production OCR was moved
+# to evo-ai over HTTP (app/services/ocr_service.py uses httpx; the remote
+# multimodal agent does all parsing — no local PDF/image parsing).
+#
+# Required ONLY by scripts/test_ocr.py, the legacy GigaChat POC that does
+# local PDF text extraction / PDF-to-image rendering and calls GigaChat
+# directly. Install only if you need to run that script:
+#   pip install -r requirements-ocr.txt
+gigachat==0.2.0
+pdfplumber==0.11.9
+PyMuPDF==1.27.2.2
