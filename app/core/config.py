@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     SQL_ECHO: bool = False
     LOG_LEVEL: str = "INFO"
     APP_TIMEZONE: str = "Europe/Moscow"
+    # APScheduler placement.
+    # True  — запускать планировщик внутри процесса API (по умолчанию,
+    #         удобно для dev/local; поведение не меняется).
+    # False — НЕ стартовать планировщик в приложении; в проде его надо
+    #         запускать отдельным процессом: `python -m app.scheduler`.
+    RUN_SCHEDULER_IN_APP: bool = True
     SUBMIT_CUTOFF_HOUR: int = 11
     # Регуляторный шлюз приёма заявок (fail-closed).
     # True  — при отсутствии данных календаря (нет платёжной группы у

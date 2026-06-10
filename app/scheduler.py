@@ -1,7 +1,19 @@
 """
 Фоновые задачи (APScheduler).
 Крон 17:00 МСК — уведомления инициаторам о неоплаченных заявках на сегодня.
+
+Планировщик может работать двумя способами:
+  * внутри процесса API (по умолчанию, RUN_SCHEDULER_IN_APP=true) — см. app/main.py;
+  * как отдельный процесс в проде:  python -m app.scheduler
+    (тогда в API ставят RUN_SCHEDULER_IN_APP=false).
+
+ВНИМАНИЕ: не запускайте оба режима одновременно — задача задвоится
+(уведомления будут отправлены дважды).
 """
+import asyncio
+import logging
+import signal
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from datetime import date, datetime, timezone, timedelta
@@ -68,3 +80,48 @@ def start_scheduler():
 
 def stop_scheduler():
     scheduler.shutdown(wait=False)
+
+
+async def _run_standalone() -> None:
+    """Запускает планировщик в собственном asyncio-цикле и блокируется навсегда.
+
+    Используется только при `python -m app.scheduler`. Корректно завершается
+    по SIGINT/SIGTERM (на платформах, где они поддерживаются).
+    """
+    logger = logging.getLogger(__name__)
+
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def _request_stop() -> None:
+        logger.info("Получен сигнал остановки планировщика.")
+        stop_event.set()
+
+    # add_signal_handler доступен не на всех платформах (на Windows для
+    # ProactorEventLoop его нет) — деградируем до KeyboardInterrupt.
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _request_stop)
+        except (NotImplementedError, AttributeError):
+            pass
+
+    start_scheduler()
+    logger.info("Планировщик запущен как отдельный процесс. Ожидание задач...")
+
+    try:
+        await stop_event.wait()
+    finally:
+        stop_scheduler()
+        logger.info("Планировщик остановлен.")
+
+
+if __name__ == "__main__":
+    # Локальная настройка логирования, чтобы отдельный процесс был информативным.
+    from app.core.logging_config import configure_logging
+
+    configure_logging()
+    try:
+        asyncio.run(_run_standalone())
+    except KeyboardInterrupt:
+        # Fallback для платформ без add_signal_handler (Windows).
+        pass

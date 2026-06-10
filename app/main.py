@@ -47,14 +47,32 @@ app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["
 app.include_router(balances.router, prefix="/api/v1/balances", tags=["Balances"])
 
 
+# Флаг, был ли планировщик запущен внутри процесса API.
+# В проде RUN_SCHEDULER_IN_APP=false — планировщик запускается отдельно
+# (`python -m app.scheduler`), а приложение его не трогает.
+_scheduler_started = False
+
+
 @app.on_event("startup")
 async def startup():
-    start_scheduler()
+    global _scheduler_started
+    if app_settings.RUN_SCHEDULER_IN_APP:
+        start_scheduler()
+        _scheduler_started = True
+        logger.info("APScheduler запущен внутри процесса API (RUN_SCHEDULER_IN_APP=true).")
+    else:
+        logger.info(
+            "APScheduler НЕ запущен в приложении (RUN_SCHEDULER_IN_APP=false); "
+            "ожидается отдельный процесс: python -m app.scheduler."
+        )
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    stop_scheduler()
+    global _scheduler_started
+    if _scheduler_started:
+        stop_scheduler()
+        _scheduler_started = False
 
 
 if __name__ == "__main__":
