@@ -1,6 +1,6 @@
 import uuid
 import enum
-from sqlalchemy import Column, String, Numeric, DateTime, Date, ForeignKey, Boolean, Text
+from sqlalchemy import Column, String, Numeric, DateTime, Date, ForeignKey, Boolean, Text, Index
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone, timedelta
@@ -35,12 +35,14 @@ class PaymentRequest(Base):
     request_number = Column(String(30), nullable=True, unique=True)
     amount = Column(Numeric(18, 2), nullable=False)
     description = Column(String, nullable=False)
-    created_at = Column(DateTime, default=get_gmt3_time)
-    payment_date = Column(Date, nullable=True) 
-    
+    # created_at: always used for ORDER BY ... DESC in списочной выборке
+    created_at = Column(DateTime, default=get_gmt3_time, index=True)
+    payment_date = Column(Date, nullable=True, index=True)
+
     # НОВОЕ: Ссылки на справочники
-    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False)
-    direction_id = Column(UUID(as_uuid=True), ForeignKey("directions.id"), nullable=False)
+    # organization_id / direction_id / creator_id — горячие фильтры (RLS + явные where)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    direction_id = Column(UUID(as_uuid=True), ForeignKey("directions.id"), nullable=False, index=True)
     budget_item_id = Column(UUID(as_uuid=True), ForeignKey("budget_items.id"), nullable=False)
     
     # НОВОЕ: Дополнительные реквизиты
@@ -61,8 +63,18 @@ class PaymentRequest(Base):
     gate_approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     gate_reason = Column(Text, nullable=True)                      # Комментарий ФЭО при разрешении шлюза
     
-    creator_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    creator_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     is_marked_for_deletion = Column(Boolean, default=False, nullable=False, server_default="false")
+
+    # Композитный индекс под совместную фильтрацию по статусам
+    # (approval_status, payment_status фильтруются вместе в get_all_requests).
+    __table_args__ = (
+        Index(
+            "ix_payment_requests_approval_payment_status",
+            "approval_status",
+            "payment_status",
+        ),
+    )
 
     # Relationships
     organization = relationship("Organization")
