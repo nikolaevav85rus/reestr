@@ -2,13 +2,15 @@ import React, { useState } from 'react';
 import { Alert, App, Button, Card, Form, Input, Layout, Typography } from 'antd';
 import { LockOutlined, UserOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import apiClient from '../api/apiClient';
 import { useAuthStore } from '../store/authStore';
 
 const { Title, Text } = Typography;
 const { Content } = Layout;
 
-const parseLoginError = (error: any): string => {
+const parseLoginError = (error: any, t: TFunction): string => {
   const detail = error?.response?.data?.detail;
   if (typeof detail === 'string' && detail.trim()) return detail;
 
@@ -30,11 +32,12 @@ const parseLoginError = (error: any): string => {
     if (typeof detail.message === 'string' && detail.message.trim()) return detail.message;
   }
 
-  if (!error?.response) return 'Сеть недоступна. Проверьте подключение и повторите вход.';
-  return 'Не удалось выполнить вход. Попробуйте еще раз.';
+  if (!error?.response) return t('login.errors.network');
+  return t('login.errors.generic');
 };
 
 const LoginPage: React.FC = () => {
+  const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -79,10 +82,10 @@ const LoginPage: React.FC = () => {
 
       setAuth(access_token, userData, permissions || []);
 
-      messageApi.success(`Добро пожаловать, ${user.full_name}!`);
+      messageApi.success(t('login.welcome', { name: user.full_name }));
       navigate('/dashboard');
     } catch (error: any) {
-      const errorMessage = parseLoginError(error);
+      const errorMessage = parseLoginError(error, t);
       setLoginError(errorMessage);
       form.setFieldsValue({ username, password: '' });
       messageApi.error(errorMessage, 5);
@@ -97,9 +100,9 @@ const LoginPage: React.FC = () => {
         <Card style={{ width: 400, boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
           <div style={{ textAlign: 'center', marginBottom: 24 }}>
             <Title level={2} style={{ color: '#1890ff', marginBottom: 0 }}>
-              Казначейство Метком
+              {t('login.title')}
             </Title>
-            <Text type="secondary">Корпоративный платежный реестр</Text>
+            <Text type="secondary">{t('login.subtitle')}</Text>
           </div>
 
           {loginError && (
@@ -122,13 +125,13 @@ const LoginPage: React.FC = () => {
           >
             <Form.Item
               name="username"
-              rules={[{ required: true, message: 'Введите логин AD' }]}
+              rules={[{ required: true, message: t('login.errors.usernameRequired') }]}
             >
               <Input
                 id="login-username"
                 name="username"
                 prefix={<UserOutlined style={{ color: '#bfbfbf' }} />}
-                placeholder="Логин (AD)"
+                placeholder={t('login.username')}
                 autoComplete="username"
                 autoCapitalize="none"
                 autoCorrect="off"
@@ -140,13 +143,13 @@ const LoginPage: React.FC = () => {
 
             <Form.Item
               name="password"
-              rules={[{ required: true, message: 'Введите пароль' }]}
+              rules={[{ required: true, message: t('login.errors.passwordRequired') }]}
             >
               <Input.Password
                 id="login-password"
                 name="current-password"
                 prefix={<LockOutlined style={{ color: '#bfbfbf' }} />}
-                placeholder="Пароль"
+                placeholder={t('login.password')}
                 autoComplete="current-password"
                 onKeyDown={clearErrorOnUserInput}
                 onPaste={clearErrorOnUserInput}
@@ -155,7 +158,7 @@ const LoginPage: React.FC = () => {
 
             <Form.Item style={{ marginBottom: 0 }}>
               <Button type="primary" htmlType="submit" block loading={loading}>
-                Войти в систему
+                {t('login.submit')}
               </Button>
             </Form.Item>
           </Form>
