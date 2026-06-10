@@ -411,6 +411,372 @@ async def update_payment_status(
     await db.refresh(req)
     return req
 
+
+# ---------------------------------------------------------------------------
+# Единый конечный автомат переходов заявки.
+#
+# transition() централизует ОБЩУЮ механику любого перехода статуса заявки:
+#   1. блокировка строки FOR UPDATE (защита от гонок двойной обработки),
+#   2. валидация исходного статуса по декларативной карте ALLOWED_TRANSITIONS,
+#   3. guard «помечена на удаление»,
+#   4. мутация approval_status,
+#   5. ОДНА запись AuditLog (actor + человекочитаемый summary),
+#   6. один commit,
+#   7. fan-out уведомлений нужным получателям (актор себя не уведомляет).
+#
+# Бесповедочные (per-action) различия — доп. поля (special_order, gate_*,
+# is_budgeted, rejection_reason, payment_date, contract_status), точный текст
+# summary/уведомления, тип уведомления и список получателей — задаёт небольшой
+# per-action handler в _TRANSITION_HANDLERS, который ВЫЗЫВАЕТСЯ под блокировкой,
+# мутирует доп. поля req и возвращает TransitionResult.
+# ---------------------------------------------------------------------------
+
+# Декларативная карта: action -> {"from": {допустимые ApprovalStatus}|None, "to": ApprovalStatus|None}.
+# from=None  -> исходный статус не проверяется (set_contract / set_special_order).
+# to=None    -> целевой статус определяет сам handler (submit -> PENDING|PENDING_GATE;
+#               set_budget -> MEMO_REQUIRED|PENDING|без изменения).
+ALLOWED_TRANSITIONS: dict = {
+    "submit":         {"from": {ApprovalStatus.DRAFT, ApprovalStatus.CLARIFICATION, ApprovalStatus.POSTPONED}, "to": None},
+    "approve_gate":   {"from": {ApprovalStatus.PENDING_GATE}, "to": ApprovalStatus.PENDING},
+    "reject_gate":    {"from": {ApprovalStatus.PENDING_GATE}, "to": ApprovalStatus.REJECTED},
+    "set_contract":   {"from": None, "to": None},
+    "approve_memo":   {"from": {ApprovalStatus.PENDING_MEMO}, "to": ApprovalStatus.PENDING},
+    "reject_memo":    {"from": {ApprovalStatus.PENDING_MEMO}, "to": ApprovalStatus.REJECTED},
+    "memo_reason":    {"from": {ApprovalStatus.MEMO_REQUIRED}, "to": ApprovalStatus.PENDING_MEMO},
+    "cancel_memo":    {"from": {ApprovalStatus.MEMO_REQUIRED}, "to": ApprovalStatus.REJECTED},
+    "move_to_draft":  {"from": {ApprovalStatus.MEMO_REQUIRED, ApprovalStatus.PENDING_MEMO, ApprovalStatus.POSTPONED}, "to": ApprovalStatus.DRAFT},
+    "set_budget":     {"from": None, "to": None},
+    "set_special_order": {"from": None, "to": None},
+    "suspend":        {"from": {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}, "to": ApprovalStatus.SUSPENDED},
+    "unsuspend":      {"from": {ApprovalStatus.SUSPENDED}, "to": ApprovalStatus.PENDING},
+    "postpone":       {"from": None, "to": ApprovalStatus.POSTPONED},
+}
+
+# Сообщения guard'а исходного статуса — ТОЧНО как в прежнем inline-коде каждого
+# эндпоинта (детали 400-ответа должны остаться байт-идентичными).
+_SOURCE_GUARD_DETAIL: dict = {
+    "submit":        None,  # формируется динамически с текущим статусом
+    "approve_gate":  "Заявка не ожидает разрешения шлюза",
+    "reject_gate":   "Заявка не ожидает разрешения шлюза",
+    "approve_memo":  "Заявка не ожидает согласования по бюджету",
+    "reject_memo":   "Заявка не ожидает согласования по бюджету",
+    "memo_reason":   "Заявка не ожидает обоснования вне бюджета",
+    "cancel_memo":   "Отменить можно только заявку, ожидающую обоснования вне бюджета",
+    "move_to_draft": "Перенос доступен только для заявок в статусе 'Вне бюджета' или 'Перенесено'",
+    "suspend":       "Отложить можно только заявку на согласовании или согласованную заявку",
+    "unsuspend":     "Заявка не отложена",
+}
+
+
+class TransitionResult:
+    """Результат per-action handler'а: что писать в аудит и кому слать уведомления.
+
+    audit_action  — строка action для AuditLog (SUBMIT / APPROVE_GATE / ...).
+    summary       — человекочитаемый текст (он же текст уведомления и audit.summary).
+    audit_extra   — доп. поля в changes (old/new/is_budgeted и т.п.).
+    notif_type    — код типа уведомления (SUBMITTED / GATE_APPROVED / ...), либо None.
+    notif_recipients — список UUID получателей, либо None если рассылки нет.
+    """
+    __slots__ = ("audit_action", "summary", "audit_extra", "notif_type", "notif_recipients")
+
+    def __init__(self, audit_action, summary, audit_extra=None, notif_type=None, notif_recipients=None):
+        self.audit_action = audit_action
+        self.summary = summary
+        self.audit_extra = audit_extra or {}
+        self.notif_type = notif_type
+        self.notif_recipients = notif_recipients
+
+
+def _old_status_str(req: PaymentRequest) -> str:
+    s = req.approval_status
+    return s.value if isinstance(s, ApprovalStatus) else str(s)
+
+
+# --- per-action handlers ----------------------------------------------------
+# Каждый handler ВЫЗЫВАЕТСЯ под блокировкой, ПОСЛЕ guard'ов, но ДО мутации
+# approval_status единым автоматом. Handler сам:
+#   * выставляет approval_status (т.к. целевой статус бывает динамическим),
+#   * мутирует бесповедочные поля,
+#   * пишет/чистит rejection_reason,
+#   * возвращает TransitionResult (или None — тогда ни аудита, ни рассылки,
+#     ни смены статуса автоматом: используется для no-op-ветки set_budget).
+
+async def _h_submit(db, req, actor, kwargs) -> TransitionResult:
+    old_status = _old_status_str(req)
+    # Бесповедочный pre-flight: проверки даты и шлюза выполняет ЭНДПОИНТ и
+    # передаёт результат сюда (gate_allowed / gate_reason), т.к. get_gate_preview
+    # живёт в слое эндпоинта. Поведение и тексты сохранены 1:1.
+    gate_allowed = kwargs["gate_allowed"]
+    gate_reason = kwargs.get("gate_reason")
+    if not gate_allowed:
+        req.approval_status = ApprovalStatus.PENDING_GATE
+        req.gate_reason = gate_reason
+        summary = f"{request_title(req)}: подана на разрешение шлюза (исключение из регламента). {req.counterparty}, {req.amount:,.0f} ₽."
+        recipients = await notif_svc.get_active_users_with_permission(db, "gate_approve")
+        return TransitionResult("SUBMIT_GATE", summary,
+                                {"old": old_status, "new": "PENDING_GATE"},
+                                "SUBMITTED", recipients)
+    req.approval_status = ApprovalStatus.PENDING
+    summary = f"{request_title(req)}: подана на согласование ФЭО. {req.counterparty}, {req.amount:,.0f} ₽."
+    recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
+    return TransitionResult("SUBMIT", summary,
+                            {"old": old_status, "new": "PENDING"},
+                            "SUBMITTED", recipients)
+
+
+async def _h_approve_gate(db, req, actor, kwargs) -> TransitionResult:
+    req.approval_status = ApprovalStatus.PENDING
+    req.special_order = True
+    req.gate_approved_by = actor.id
+    req.gate_reason = kwargs.get("reason") or req.gate_reason
+    summary = f"{request_title(req)}: разрешён экстренный платёж (шлюз). {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование ФЭО."
+    recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
+    return TransitionResult("APPROVE_GATE", summary,
+                            {"old": "PENDING_GATE", "new": "PENDING"},
+                            "GATE_APPROVED", recipients)
+
+
+async def _h_reject_gate(db, req, actor, kwargs) -> TransitionResult:
+    req.approval_status = ApprovalStatus.REJECTED
+    req.rejection_reason = kwargs.get("reason")
+    summary = f"{request_title(req)}: запрос на экстренный платёж отклонён ФЭО. Причина: {kwargs.get('reason') or '—'}"
+    return TransitionResult("REJECT_GATE", summary,
+                            {"old": "PENDING_GATE", "new": "REJECTED"},
+                            "GATE_REJECTED", [req.creator_id])
+
+
+async def _h_set_contract(db, req, actor, kwargs) -> TransitionResult:
+    old_contract = req.contract_status
+    req.contract_status = kwargs.get("contract_status", req.contract_status)
+    contract_label = {True: "Да", False: "Нет", None: "—"}.get(req.contract_status, str(req.contract_status))
+    summary = f"{request_title(req)}: статус договора изменён на «{contract_label}»."
+    return TransitionResult("SET_CONTRACT", summary,
+                            {"old": str(old_contract), "new": str(req.contract_status)},
+                            None, None)
+
+
+async def _h_approve_memo(db, req, actor, kwargs) -> TransitionResult:
+    req.approval_status = ApprovalStatus.PENDING
+    summary = f"{request_title(req)}: внебюджетный платёж утверждён директором. {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование ФЭО."
+    recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
+    return TransitionResult("APPROVE_MEMO", summary,
+                            {"old": "PENDING_MEMO", "new": "PENDING"},
+                            "MEMO_APPROVED", recipients)
+
+
+async def _h_reject_memo(db, req, actor, kwargs) -> TransitionResult:
+    req.approval_status = ApprovalStatus.REJECTED
+    req.rejection_reason = kwargs.get("reason")
+    summary = f"{request_title(req)}: внебюджетный платёж не утверждён. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {kwargs.get('reason') or '—'}"
+    return TransitionResult("REJECT_MEMO", summary,
+                            {"old": "PENDING_MEMO", "new": "REJECTED"},
+                            "REJECTED", [req.creator_id])
+
+
+async def _h_memo_reason(db, req, actor, kwargs) -> TransitionResult:
+    # Проверка непустоты — ПОСЛЕ guard'а исходного статуса (как в прежнем
+    # inline-коде: сначала «не ожидает обоснования», затем «укажите обоснование»).
+    reason = kwargs.get("reason")
+    if not reason or not reason.strip():
+        raise HTTPException(status_code=400, detail="Укажите обоснование вне бюджета")
+    req.rejection_reason = reason.strip()
+    req.approval_status = ApprovalStatus.PENDING_MEMO
+    summary = f"{request_title(req)}: добавлено обоснование вне бюджета. {req.counterparty}, {req.amount:,.0f} ₽."
+    recipients = await notif_svc.get_active_users_with_permission(db, "memo_approve")
+    return TransitionResult("MEMO_REASON", summary,
+                            {"old": "MEMO_REQUIRED", "new": "PENDING_MEMO"},
+                            "OFF_BUDGET", recipients)
+
+
+async def _h_cancel_memo(db, req, actor, kwargs) -> TransitionResult:
+    req.approval_status = ApprovalStatus.REJECTED
+    req.rejection_reason = kwargs.get("reason") or "Отменена инициатором"
+    summary = f"{request_title(req)}: отменена. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {req.rejection_reason}"
+    return TransitionResult("CANCEL_MEMO", summary,
+                            {"old": "MEMO_REQUIRED", "new": "REJECTED"},
+                            "REJECTED", [req.creator_id])
+
+
+async def _h_move_to_draft(db, req, actor, kwargs) -> TransitionResult:
+    from datetime import date as date_type
+    old_status = _old_status_str(req)
+    old_date = req.payment_date
+    new_date = kwargs.get("payment_date")
+    if new_date:
+        req.payment_date = date_type.fromisoformat(new_date)
+    if req.approval_status in {ApprovalStatus.MEMO_REQUIRED, ApprovalStatus.PENDING_MEMO}:
+        req.is_budgeted = None
+        req.rejection_reason = None
+    req.approval_status = ApprovalStatus.DRAFT
+    old_str = old_date.strftime('%d.%m.%Y') if old_date else '—'
+    new_str = req.payment_date.strftime('%d.%m.%Y') if req.payment_date else '—'
+    summary = f"{request_title(req)}: инициатор перенёс дату с {old_str} на {new_str}. {req.counterparty}, {req.amount:,.0f} ₽"
+    return TransitionResult("MOVE_TO_DRAFT", summary,
+                            {"old": old_status, "new": "DRAFT"},
+                            "RESCHEDULED", [req.creator_id])
+
+
+async def _h_set_budget(db, req, actor, kwargs):
+    new_value = kwargs.get("is_budgeted", req.is_budgeted)
+    req.is_budgeted = new_value
+    if new_value is False and req.approval_status == ApprovalStatus.PENDING:
+        req.approval_status = ApprovalStatus.MEMO_REQUIRED
+        req.rejection_reason = None
+        summary = f"{request_title(req)}: требуется обоснование вне бюджета. {req.counterparty}, {req.amount:,.0f} ₽."
+        return TransitionResult("SET_BUDGET", summary,
+                                {"old": "PENDING", "new": "MEMO_REQUIRED", "is_budgeted": False},
+                                "OFF_BUDGET", [req.creator_id])
+    elif new_value is True and req.approval_status == ApprovalStatus.MEMO_REQUIRED:
+        req.approval_status = ApprovalStatus.PENDING
+        req.rejection_reason = None
+        summary = f"{request_title(req)}: подтверждено наличие в бюджете. {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование ФЭО."
+        recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
+        return TransitionResult("SET_BUDGET", summary,
+                                {"old": "MEMO_REQUIRED", "new": "PENDING", "is_budgeted": True},
+                                "SUBMITTED", recipients)
+    # No-op ветка: is_budgeted выставлен, но статус не меняется — ни аудита, ни
+    # уведомления (как в прежнем inline-коде: просто commit).
+    return None
+
+
+async def _h_set_special_order(db, req, actor, kwargs) -> TransitionResult:
+    old_special = req.special_order
+    req.special_order = kwargs.get("special_order", req.special_order)
+    summary = f"{request_title(req)}: спецраспоряжение {'установлено' if req.special_order else 'снято'}."
+    return TransitionResult("SET_SPECIAL_ORDER", summary,
+                            {"old": str(old_special), "new": str(req.special_order)},
+                            None, None)
+
+
+async def _h_suspend(db, req, actor, kwargs) -> TransitionResult:
+    old_status = _old_status_str(req)
+    req.approval_status = ApprovalStatus.SUSPENDED
+    req.rejection_reason = kwargs.get("reason")
+    summary = f"{request_title(req)}: отложена. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {kwargs.get('reason') or '—'}"
+    return TransitionResult("SUSPEND", summary,
+                            {"old": old_status, "new": "SUSPENDED"},
+                            "SUSPENDED", [req.creator_id])
+
+
+async def _h_unsuspend(db, req, actor, kwargs) -> TransitionResult:
+    from datetime import date as date_type
+    old_date = req.payment_date
+    new_date_str = kwargs.get("payment_date")
+    if new_date_str:
+        req.payment_date = date_type.fromisoformat(new_date_str)
+    req.special_order = False
+    req.approval_status = ApprovalStatus.PENDING
+    req.rejection_reason = None
+    old_str = old_date.strftime('%d.%m.%Y') if old_date else '—'
+    new_str = req.payment_date.strftime('%d.%m.%Y') if req.payment_date else '—'
+    summary = f"{request_title(req)}: перенесена с {old_str} на {new_str}. {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование."
+    recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
+    return TransitionResult("UNSUSPEND", summary,
+                            {"old": "SUSPENDED", "new": "PENDING"},
+                            "RESCHEDULED", recipients)
+
+
+async def _h_postpone(db, req, actor, kwargs) -> TransitionResult:
+    from datetime import date as date_type
+    old_status = _old_status_str(req)
+    old_date = req.payment_date
+    payment_date = kwargs.get("payment_date")
+    if payment_date:
+        req.payment_date = date_type.fromisoformat(payment_date)
+    req.approval_status = ApprovalStatus.POSTPONED
+    req.rejection_reason = kwargs.get("reason")
+    old_str = old_date.strftime('%d.%m.%Y') if old_date else '—'
+    new_str = req.payment_date.strftime('%d.%m.%Y') if req.payment_date else '—'
+    date_info = f"с {old_str} на {new_str}" if payment_date else f"(дата оплаты: {old_str})"
+    summary = f"{request_title(req)}: перенесена {date_info}. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {kwargs.get('reason') or '—'}"
+    return TransitionResult("POSTPONE", summary,
+                            {"old": old_status, "new": "POSTPONED"},
+                            "POSTPONED", [req.creator_id])
+
+
+_TRANSITION_HANDLERS = {
+    "submit":            _h_submit,
+    "approve_gate":      _h_approve_gate,
+    "reject_gate":       _h_reject_gate,
+    "set_contract":      _h_set_contract,
+    "approve_memo":      _h_approve_memo,
+    "reject_memo":       _h_reject_memo,
+    "memo_reason":       _h_memo_reason,
+    "cancel_memo":       _h_cancel_memo,
+    "move_to_draft":     _h_move_to_draft,
+    "set_budget":        _h_set_budget,
+    "set_special_order": _h_set_special_order,
+    "suspend":           _h_suspend,
+    "unsuspend":         _h_unsuspend,
+    "postpone":          _h_postpone,
+}
+
+
+async def transition(
+    db: AsyncSession,
+    request_id: UUID,
+    action: str,
+    actor: User,
+    **kwargs,
+) -> PaymentRequest:
+    """Единая точка выполнения перехода статуса заявки.
+
+    Централизует: блокировку строки, проверку исходного статуса по
+    ALLOWED_TRANSITIONS, guard «помечена на удаление», единый AuditLog, commit
+    и рассылку уведомлений. Бесповедочные поля и тексты задаёт per-action handler.
+
+    Scope-проверки (assert_can_view_request / creator-or-edit_all) остаются на
+    эндпоинте — у разных действий разные правила видимости, специально не
+    унифицируются (см. NB в approve_memo/reject_memo).
+    """
+    spec = ALLOWED_TRANSITIONS[action]
+    handler = _TRANSITION_HANDLERS[action]
+
+    # 1. Блокировка строки на время транзакции (защита от гонок).
+    await _lock_request_for_update(db, request_id)
+    req = await get_request_by_id(db, request_id)
+    if not req:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+
+    # 2. Guard «помечена на удаление» (после загрузки/блокировки).
+    # ВАЖНО: текст 1:1 совпадает с эндпоинтным _ensure_not_marked (с суффиксом
+    # «Снимите пометку…»), т.к. ВСЕ inline-переходы раньше использовали именно его.
+    # (update_request_status/update_payment_status сохраняют свой короткий текст.)
+    if req.is_marked_for_deletion:
+        raise HTTPException(status_code=400, detail="Заявка помечена на удаление — действие недоступно. Снимите пометку, чтобы продолжить.")
+
+    # 3. Валидация исходного статуса по декларативной карте.
+    allowed_from = spec["from"]
+    if allowed_from is not None and req.approval_status not in allowed_from:
+        if action == "submit":
+            detail = f"Нельзя отправить заявку со статусом «{req.approval_status}»"
+        else:
+            detail = _SOURCE_GUARD_DETAIL[action]
+        raise HTTPException(status_code=400, detail=detail)
+
+    # 4. Per-action handler: мутирует доп. поля + approval_status, возвращает
+    #    что писать в аудит и кому слать уведомления (или None — no-op).
+    result = await handler(db, req, actor, kwargs)
+    if result is None:
+        # No-op ветка (set_budget без смены статуса): только commit.
+        await db.commit()
+        return await get_request_by_id(db, request_id)
+
+    # 5. Единый AuditLog (actor + summary).
+    write_audit(db, req, result.audit_action, actor, result.summary, extra=result.audit_extra)
+
+    # 6. Fan-out уведомлений (актор себя не уведомляет).
+    if result.notif_type and result.notif_recipients is not None:
+        await notif_svc.fan_out_notification(
+            db, result.notif_recipients, result.summary, result.notif_type,
+            request_id=req.id, exclude_user_id=actor.id if actor else None,
+        )
+
+    # 7. Один commit.
+    await db.commit()
+    return await get_request_by_id(db, request_id)
+
+
 async def get_stats(db: AsyncSession) -> dict:
     """"""
     total = await db.execute(

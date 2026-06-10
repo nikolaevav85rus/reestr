@@ -310,9 +310,8 @@ async def submit_request(
     if not req.payment_date:
         raise HTTPException(status_code=400, detail="Укажите дату оплаты перед отправкой")
 
-    old_status = req.approval_status.value if isinstance(req.approval_status, ApprovalStatus) else str(req.approval_status)
-
-    # Проверяем временной шлюз (МСК) — только если дата оплаты = сегодня
+    # Проверяем временной шлюз (МСК) — только если дата оплаты = сегодня.
+    # get_gate_preview живёт в слое эндпоинта; результат передаём в transition().
     gate_preview = await get_gate_preview(
         db,
         payment_date=req.payment_date,
@@ -320,23 +319,10 @@ async def submit_request(
         budget_item_id=req.budget_item_id,
     )
 
-    if not gate_preview.allowed:
-        req.approval_status = ApprovalStatus.PENDING_GATE
-        req.gate_reason = gate_preview.reason
-        summary = f"{request_title(req)}: подана на разрешение шлюза (исключение из регламента). {req.counterparty}, {req.amount:,.0f} ₽."
-        request_service.write_audit(db, req, "SUBMIT_GATE", current_user, summary, extra={"old": old_status, "new": "PENDING_GATE"})
-        recipients = await notif_svc.get_active_users_with_permission(db, "gate_approve")
-        await notif_svc.fan_out_notification(db, recipients, summary, "SUBMITTED", request_id=req.id, exclude_user_id=current_user.id)
-        await db.commit()
-        return await request_service.get_request_by_id(db, request_id)
-
-    req.approval_status = ApprovalStatus.PENDING
-    summary = f"{request_title(req)}: подана на согласование ФЭО. {req.counterparty}, {req.amount:,.0f} ₽."
-    request_service.write_audit(db, req, "SUBMIT", current_user, summary, extra={"old": old_status, "new": "PENDING"})
-    recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
-    await notif_svc.fan_out_notification(db, recipients, summary, "SUBMITTED", request_id=req.id, exclude_user_id=current_user.id)
-    await db.commit()
-    return await request_service.get_request_by_id(db, request_id)
+    return await request_service.transition(
+        db, request_id, "submit", current_user,
+        gate_allowed=gate_preview.allowed, gate_reason=gate_preview.reason,
+    )
 
 
 @router.post("/{request_id}/upload", response_model=RequestResponse)
@@ -526,19 +512,9 @@ async def approve_gate(
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     await request_service.assert_can_view_request(db, current_user, req)
-    _ensure_not_marked(req)
-    if req.approval_status != ApprovalStatus.PENDING_GATE:
-        raise HTTPException(status_code=400, detail="Заявка не ожидает разрешения шлюза")
-    req.approval_status = ApprovalStatus.PENDING
-    req.special_order = True
-    req.gate_approved_by = current_user.id
-    req.gate_reason = body.reason or req.gate_reason
-    summary = f"{request_title(req)}: разрешён экстренный платёж (шлюз). {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование ФЭО."
-    request_service.write_audit(db, req, "APPROVE_GATE", current_user, summary, extra={"old": "PENDING_GATE", "new": "PENDING"})
-    recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
-    await notif_svc.fan_out_notification(db, recipients, summary, "GATE_APPROVED", request_id=req.id, exclude_user_id=current_user.id)
-    await db.commit()
-    return await request_service.get_request_by_id(db, request_id)
+    return await request_service.transition(
+        db, request_id, "approve_gate", current_user, reason=body.reason,
+    )
 
 
 @router.post("/{request_id}/reject_gate", response_model=RequestResponse)
@@ -552,16 +528,9 @@ async def reject_gate(
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     await request_service.assert_can_view_request(db, current_user, req)
-    _ensure_not_marked(req)
-    if req.approval_status != ApprovalStatus.PENDING_GATE:
-        raise HTTPException(status_code=400, detail="Заявка не ожидает разрешения шлюза")
-    req.approval_status = ApprovalStatus.REJECTED
-    req.rejection_reason = body.reason
-    summary = f"{request_title(req)}: запрос на экстренный платёж отклонён ФЭО. Причина: {body.reason or '—'}"
-    request_service.write_audit(db, req, "REJECT_GATE", current_user, summary, extra={"old": "PENDING_GATE", "new": "REJECTED"})
-    await notif_svc.fan_out_notification(db, [req.creator_id], summary, "GATE_REJECTED", request_id=req.id, exclude_user_id=current_user.id)
-    await db.commit()
-    return await request_service.get_request_by_id(db, request_id)
+    return await request_service.transition(
+        db, request_id, "reject_gate", current_user, reason=body.reason,
+    )
 
 
 @router.patch("/{request_id}/contract", response_model=RequestResponse)
@@ -575,14 +544,10 @@ async def set_contract_status(
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     await request_service.assert_can_view_request(db, current_user, req)
-    _ensure_not_marked(req)
-    old_contract = req.contract_status
-    req.contract_status = data.get("contract_status", req.contract_status)
-    contract_label = {True: "Да", False: "Нет", None: "—"}.get(req.contract_status, str(req.contract_status))
-    summary = f"{request_title(req)}: статус договора изменён на «{contract_label}»."
-    request_service.write_audit(db, req, "SET_CONTRACT", current_user, summary, extra={"old": str(old_contract), "new": str(req.contract_status)})
-    await db.commit()
-    return await request_service.get_request_by_id(db, request_id)
+    # Передаём contract_status только если ключ присутствует в теле — иначе
+    # handler сохранит текущее значение (как прежний data.get(..., req.contract_status)).
+    kw = {"contract_status": data["contract_status"]} if "contract_status" in data else {}
+    return await request_service.transition(db, request_id, "set_contract", current_user, **kw)
 
 
 @router.post("/{request_id}/approve_memo", response_model=RequestResponse)
@@ -591,23 +556,11 @@ async def approve_memo(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("memo_approve"))
 ):
-    req = await request_service.get_request_by_id(db, request_id)
-    if not req:
-        raise HTTPException(status_code=404, detail="Заявка не найдена")
     # NB: object-level RLS НЕ применяется здесь намеренно. Роль DIRECTOR держит
     # memo_approve, но из областей видимости — только req_view_org (не req_view_all).
     # Жёсткое требование «директор = director_id организации заявки» сломало бы
     # зелёный workflow-набор (memo-сценарии между орг). Оставлено permission-only.
-    _ensure_not_marked(req)
-    if req.approval_status != ApprovalStatus.PENDING_MEMO:
-        raise HTTPException(status_code=400, detail="Заявка не ожидает согласования по бюджету")
-    req.approval_status = ApprovalStatus.PENDING
-    summary = f"{request_title(req)}: внебюджетный платёж утверждён директором. {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование ФЭО."
-    request_service.write_audit(db, req, "APPROVE_MEMO", current_user, summary, extra={"old": "PENDING_MEMO", "new": "PENDING"})
-    recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
-    await notif_svc.fan_out_notification(db, recipients, summary, "MEMO_APPROVED", request_id=req.id, exclude_user_id=current_user.id)
-    await db.commit()
-    return await request_service.get_request_by_id(db, request_id)
+    return await request_service.transition(db, request_id, "approve_memo", current_user)
 
 
 @router.post("/{request_id}/reject_memo", response_model=RequestResponse)
@@ -617,21 +570,11 @@ async def reject_memo(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("memo_approve"))
 ):
-    req = await request_service.get_request_by_id(db, request_id)
-    if not req:
-        raise HTTPException(status_code=404, detail="Заявка не найдена")
     # NB: object-level RLS НЕ применяется здесь намеренно (см. approve_memo).
     # DIRECTOR держит memo_approve, но без req_view_all → permission-only.
-    _ensure_not_marked(req)
-    if req.approval_status != ApprovalStatus.PENDING_MEMO:
-        raise HTTPException(status_code=400, detail="Заявка не ожидает согласования по бюджету")
-    req.approval_status = ApprovalStatus.REJECTED
-    req.rejection_reason = body.reason
-    summary = f"{request_title(req)}: внебюджетный платёж не утверждён. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}"
-    request_service.write_audit(db, req, "REJECT_MEMO", current_user, summary, extra={"old": "PENDING_MEMO", "new": "REJECTED"})
-    await notif_svc.fan_out_notification(db, [req.creator_id], summary, "REJECTED", request_id=req.id, exclude_user_id=current_user.id)
-    await db.commit()
-    return await request_service.get_request_by_id(db, request_id)
+    return await request_service.transition(
+        db, request_id, "reject_memo", current_user, reason=body.reason,
+    )
 
 
 @router.post("/{request_id}/memo_reason", response_model=RequestResponse)
@@ -647,18 +590,9 @@ async def memo_reason(
     _ensure_not_marked(req)
     if req.creator_id != current_user.id and not has_perm(current_user, "req_edit_all"):
         raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
-    if req.approval_status != ApprovalStatus.MEMO_REQUIRED:
-        raise HTTPException(status_code=400, detail="Заявка не ожидает обоснования вне бюджета")
-    if not body.reason or not body.reason.strip():
-        raise HTTPException(status_code=400, detail="Укажите обоснование вне бюджета")
-    req.rejection_reason = body.reason.strip()
-    req.approval_status = ApprovalStatus.PENDING_MEMO
-    summary = f"{request_title(req)}: добавлено обоснование вне бюджета. {req.counterparty}, {req.amount:,.0f} ₽."
-    request_service.write_audit(db, req, "MEMO_REASON", current_user, summary, extra={"old": "MEMO_REQUIRED", "new": "PENDING_MEMO"})
-    recipients = await notif_svc.get_active_users_with_permission(db, "memo_approve")
-    await notif_svc.fan_out_notification(db, recipients, summary, "OFF_BUDGET", request_id=req.id, exclude_user_id=current_user.id)
-    await db.commit()
-    return await request_service.get_request_by_id(db, request_id)
+    return await request_service.transition(
+        db, request_id, "memo_reason", current_user, reason=body.reason,
+    )
 
 
 @router.post("/{request_id}/cancel_memo", response_model=RequestResponse)
@@ -674,15 +608,9 @@ async def cancel_memo(
     _ensure_not_marked(req)
     if req.creator_id != current_user.id and not has_perm(current_user, "req_edit_all"):
         raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
-    if req.approval_status != ApprovalStatus.MEMO_REQUIRED:
-        raise HTTPException(status_code=400, detail="Отменить можно только заявку, ожидающую обоснования вне бюджета")
-    req.approval_status = ApprovalStatus.REJECTED
-    req.rejection_reason = body.reason or "Отменена инициатором"
-    summary = f"{request_title(req)}: отменена. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {req.rejection_reason}"
-    request_service.write_audit(db, req, "CANCEL_MEMO", current_user, summary, extra={"old": "MEMO_REQUIRED", "new": "REJECTED"})
-    await notif_svc.fan_out_notification(db, [req.creator_id], summary, "REJECTED", request_id=req.id, exclude_user_id=current_user.id)
-    await db.commit()
-    return await request_service.get_request_by_id(db, request_id)
+    return await request_service.transition(
+        db, request_id, "cancel_memo", current_user, reason=body.reason,
+    )
 
 
 @router.post("/{request_id}/move_to_draft", response_model=RequestResponse)
@@ -699,26 +627,9 @@ async def move_to_draft(
     _ensure_not_marked(req)
     if req.creator_id != current_user.id and not has_perm(current_user, "req_edit_all"):
         raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
-    allowed = {ApprovalStatus.MEMO_REQUIRED, ApprovalStatus.PENDING_MEMO, ApprovalStatus.POSTPONED}
-    if req.approval_status not in allowed:
-        raise HTTPException(status_code=400, detail="Перенос доступен только для заявок в статусе 'Вне бюджета' или 'Перенесено'")
-    from datetime import date as date_type
-    old_status = req.approval_status.value if isinstance(req.approval_status, ApprovalStatus) else str(req.approval_status)
-    old_date = req.payment_date
-    new_date = data.get("payment_date")
-    if new_date:
-        req.payment_date = date_type.fromisoformat(new_date)
-    if req.approval_status in {ApprovalStatus.MEMO_REQUIRED, ApprovalStatus.PENDING_MEMO}:
-        req.is_budgeted = None
-        req.rejection_reason = None
-    req.approval_status = ApprovalStatus.DRAFT
-    old_str = old_date.strftime('%d.%m.%Y') if old_date else '—'
-    new_str = req.payment_date.strftime('%d.%m.%Y') if req.payment_date else '—'
-    summary = f"{request_title(req)}: инициатор перенёс дату с {old_str} на {new_str}. {req.counterparty}, {req.amount:,.0f} ₽"
-    request_service.write_audit(db, req, "MOVE_TO_DRAFT", current_user, summary, extra={"old": old_status, "new": "DRAFT"})
-    await notif_svc.fan_out_notification(db, [req.creator_id], summary, "RESCHEDULED", request_id=req.id, exclude_user_id=current_user.id)
-    await db.commit()
-    return await request_service.get_request_by_id(db, request_id)
+    return await request_service.transition(
+        db, request_id, "move_to_draft", current_user, payment_date=data.get("payment_date"),
+    )
 
 @router.patch("/{request_id}/budget", response_model=RequestResponse)
 async def set_budget_status(
@@ -731,25 +642,10 @@ async def set_budget_status(
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     await request_service.assert_can_view_request(db, current_user, req)
-    _ensure_not_marked(req)
-    new_value = data.get("is_budgeted", req.is_budgeted)
-    req.is_budgeted = new_value
-    # Если ФЭО явно выставляет «Нет» и заявка на согласовании — сначала запрашиваем обоснование у инициатора
-    if new_value is False and req.approval_status == ApprovalStatus.PENDING:
-        req.approval_status = ApprovalStatus.MEMO_REQUIRED
-        req.rejection_reason = None
-        summary = f"{request_title(req)}: требуется обоснование вне бюджета. {req.counterparty}, {req.amount:,.0f} ₽."
-        request_service.write_audit(db, req, "SET_BUDGET", current_user, summary, extra={"old": "PENDING", "new": "MEMO_REQUIRED", "is_budgeted": False})
-        await notif_svc.fan_out_notification(db, [req.creator_id], summary, "OFF_BUDGET", request_id=req.id, exclude_user_id=current_user.id)
-    elif new_value is True and req.approval_status == ApprovalStatus.MEMO_REQUIRED:
-        req.approval_status = ApprovalStatus.PENDING
-        req.rejection_reason = None
-        summary = f"{request_title(req)}: подтверждено наличие в бюджете. {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование ФЭО."
-        request_service.write_audit(db, req, "SET_BUDGET", current_user, summary, extra={"old": "MEMO_REQUIRED", "new": "PENDING", "is_budgeted": True})
-        recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
-        await notif_svc.fan_out_notification(db, recipients, summary, "SUBMITTED", request_id=req.id, exclude_user_id=current_user.id)
-    await db.commit()
-    return await request_service.get_request_by_id(db, request_id)
+    # Передаём is_budgeted только если ключ присутствует — иначе handler
+    # сохранит текущее значение (как прежний data.get(..., req.is_budgeted)).
+    kw = {"is_budgeted": data["is_budgeted"]} if "is_budgeted" in data else {}
+    return await request_service.transition(db, request_id, "set_budget", current_user, **kw)
 
 @router.patch("/{request_id}/special_order", response_model=RequestResponse)
 async def set_special_order(
@@ -762,13 +658,10 @@ async def set_special_order(
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     await request_service.assert_can_view_request(db, current_user, req)
-    _ensure_not_marked(req)
-    old_special = req.special_order
-    req.special_order = data.get("special_order", req.special_order)
-    summary = f"{request_title(req)}: спецраспоряжение {'установлено' if req.special_order else 'снято'}."
-    request_service.write_audit(db, req, "SET_SPECIAL_ORDER", current_user, summary, extra={"old": str(old_special), "new": str(req.special_order)})
-    await db.commit()
-    return await request_service.get_request_by_id(db, request_id)
+    # Передаём special_order только если ключ присутствует — иначе handler
+    # сохранит текущее значение (как прежний data.get(..., req.special_order)).
+    kw = {"special_order": data["special_order"]} if "special_order" in data else {}
+    return await request_service.transition(db, request_id, "set_special_order", current_user, **kw)
 
 @router.post("/{request_id}/suspend", response_model=RequestResponse)
 async def suspend_request(
@@ -781,17 +674,9 @@ async def suspend_request(
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     await request_service.assert_can_view_request(db, current_user, req)
-    _ensure_not_marked(req)
-    if req.approval_status not in {ApprovalStatus.PENDING, ApprovalStatus.APPROVED}:
-        raise HTTPException(status_code=400, detail="Отложить можно только заявку на согласовании или согласованную заявку")
-    old_status = req.approval_status.value if isinstance(req.approval_status, ApprovalStatus) else str(req.approval_status)
-    req.approval_status = ApprovalStatus.SUSPENDED
-    req.rejection_reason = body.reason
-    summary = f"{request_title(req)}: отложена. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}"
-    request_service.write_audit(db, req, "SUSPEND", current_user, summary, extra={"old": old_status, "new": "SUSPENDED"})
-    await notif_svc.fan_out_notification(db, [req.creator_id], summary, "SUSPENDED", request_id=req.id, exclude_user_id=current_user.id)
-    await db.commit()
-    return await request_service.get_request_by_id(db, request_id)
+    return await request_service.transition(
+        db, request_id, "suspend", current_user, reason=body.reason,
+    )
 
 
 @router.post("/{request_id}/unsuspend", response_model=RequestResponse)
@@ -806,25 +691,9 @@ async def unsuspend_request(
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     await request_service.assert_can_view_request(db, current_user, req)
-    _ensure_not_marked(req)
-    if req.approval_status != ApprovalStatus.SUSPENDED:
-        raise HTTPException(status_code=400, detail="Заявка не отложена")
-    from datetime import date as date_type
-    old_date = req.payment_date
-    new_date_str = data.get("payment_date")
-    if new_date_str:
-        req.payment_date = date_type.fromisoformat(new_date_str)
-    req.special_order = False
-    req.approval_status = ApprovalStatus.PENDING
-    req.rejection_reason = None
-    old_str = old_date.strftime('%d.%m.%Y') if old_date else '—'
-    new_str = req.payment_date.strftime('%d.%m.%Y') if req.payment_date else '—'
-    summary = f"{request_title(req)}: перенесена с {old_str} на {new_str}. {req.counterparty}, {req.amount:,.0f} ₽. Передана на согласование."
-    request_service.write_audit(db, req, "UNSUSPEND", current_user, summary, extra={"old": "SUSPENDED", "new": "PENDING"})
-    recipients = await notif_svc.get_active_users_with_permission(db, "req_approve")
-    await notif_svc.fan_out_notification(db, recipients, summary, "RESCHEDULED", request_id=req.id, exclude_user_id=current_user.id)
-    await db.commit()
-    return await request_service.get_request_by_id(db, request_id)
+    return await request_service.transition(
+        db, request_id, "unsuspend", current_user, payment_date=data.get("payment_date"),
+    )
 
 
 # Резервные русские подписи для действий аудита, у которых нет summary в changes.
@@ -973,26 +842,14 @@ async def postpone_request(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(PermissionChecker("req_approve"))
 ):
-    from datetime import date as date_type
     req = await request_service.get_request_by_id(db, request_id)
     if not req:
         raise HTTPException(status_code=404, detail="Заявка не найдена")
     await request_service.assert_can_view_request(db, current_user, req)
-    _ensure_not_marked(req)
-    old_status = req.approval_status.value if isinstance(req.approval_status, ApprovalStatus) else str(req.approval_status)
-    old_date = req.payment_date
-    if body.payment_date:
-        req.payment_date = date_type.fromisoformat(body.payment_date)
-    req.approval_status = ApprovalStatus.POSTPONED
-    req.rejection_reason = body.reason
-    old_str = old_date.strftime('%d.%m.%Y') if old_date else '—'
-    new_str = req.payment_date.strftime('%d.%m.%Y') if req.payment_date else '—'
-    date_info = f"с {old_str} на {new_str}" if body.payment_date else f"(дата оплаты: {old_str})"
-    summary = f"{request_title(req)}: перенесена {date_info}. {req.counterparty}, {req.amount:,.0f} ₽. Причина: {body.reason or '—'}"
-    request_service.write_audit(db, req, "POSTPONE", current_user, summary, extra={"old": old_status, "new": "POSTPONED"})
-    await notif_svc.fan_out_notification(db, [req.creator_id], summary, "POSTPONED", request_id=req.id, exclude_user_id=current_user.id)
-    await db.commit()
-    return await request_service.get_request_by_id(db, request_id)
+    return await request_service.transition(
+        db, request_id, "postpone", current_user,
+        reason=body.reason, payment_date=body.payment_date,
+    )
 
 @router.post("/{request_id}/pay", response_model=RequestResponse)
 async def pay_request(
