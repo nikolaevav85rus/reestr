@@ -1,5 +1,5 @@
 import { expect, request, test, type APIRequestContext } from '@playwright/test';
-import { API_BASE_URL, authHeaders, type AuthSession } from '../helpers/api';
+import { API_BASE_URL, TEST_PASSWORD, USERS, authHeaders, type AuthSession } from '../helpers/api';
 
 const DETAIL_IDENTITY = '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u044c \u043b\u0438\u0447\u043d\u043e\u0441\u0442\u044c';
 const DETAIL_BLOCKED = '\u0410\u043a\u043a\u0430\u0443\u043d\u0442 \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d';
@@ -86,7 +86,7 @@ test.describe('API security regression: get_current_user is_active check', () =>
 
   test.beforeAll(async () => {
     api = await request.newContext();
-    admin = await loginWithCredentials(api, 'admin', '123');
+    admin = await loginWithCredentials(api, USERS.admin, TEST_PASSWORD);
 
     const rolesResponse = await getWithRetry(api, '/dict/roles', authHeaders(admin));
     expect(rolesResponse.status()).toBe(200);

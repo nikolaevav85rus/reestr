@@ -1,0 +1,172 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Avoid piling up redundant runs on the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Backend migrate + seed + Playwright e2e
+    runs-on: ubuntu-latest
+
+    # PostgreSQL 16 service container the backend (and Alembic) connect to.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: treasury_user
+          POSTGRES_PASSWORD: treasury_pass
+          POSTGRES_DB: treasury_db
+        ports:
+          - 5432:5432
+        # Wait until Postgres is ready before any step runs.
+        options: >-
+          --health-cmd "pg_isready -U treasury_user -d treasury_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      # --- Backend (pydantic Settings) ---
+      PROJECT_NAME: "Treasury API CI"
+      # asyncpg DSN pointing at the service container on localhost.
+      DATABASE_URL: "postgresql+asyncpg://treasury_user:treasury_pass@127.0.0.1:5432/treasury_db"
+      # Throwaway key, >=32 chars and free of the rejected placeholder strings.
+      SECRET_KEY: "ci-throwaway-secret-key-0123456789-abcdefghijklmnopqrstuvwxyz"
+      ALGORITHM: "HS256"
+      ACCESS_TOKEN_EXPIRE_MINUTES: "480"
+      # Allow the Vite dev server origin so the browser e2e calls succeed.
+      CORS_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
+      # Empty key disables OCR (recognize endpoint returns 503) — no external calls in CI.
+      EVOAI_API_KEY: ""
+      # --- Playwright helper (frontend/tests/helpers/api.ts) ---
+      # Password the seeded test users get; helper logs in with this value.
+      TEST_PASSWORD: "1234"
+      # Canonical seed (scripts/seed.py) creates the superadmin as "admin1" — matches the helper default.
+      TEST_ADMIN_USER: "admin1"
+      API_URL: "http://127.0.0.1:8080/api/v1"
+      FRONTEND_URL: "http://localhost:5173"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------------------
+      # Backend: Python 3.12 + dependencies
+      # ----------------------------------------------------------------------
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # Used by scripts/run_tests.py and as a lightweight HTTP client in CI.
+          pip install requests
+
+      # Fast syntax/compile gate before we bother spinning anything up.
+      - name: Compile backend (python -m compileall)
+        run: python -m compileall app
+
+      # ----------------------------------------------------------------------
+      # Database: migrate + seed
+      # ----------------------------------------------------------------------
+      - name: Apply migrations (alembic upgrade head)
+        run: alembic upgrade head
+
+      - name: Seed database
+        # Canonical unified seed: RBAC roles+permissions, superadmin, test users
+        # (all password "1234"), NSI with ИНН, and user_organizations assignments.
+        run: python scripts/seed.py
+
+      # ----------------------------------------------------------------------
+      # Backend: start and wait for /health
+      # ----------------------------------------------------------------------
+      - name: Start backend (python -m app.main)
+        run: |
+          python -m app.main > backend.log 2>&1 &
+          echo $! > backend.pid
+          echo "Waiting for backend /health ..."
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/health > /dev/null; then
+              echo "Backend is up."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Backend failed to become healthy; dumping log:"
+          cat backend.log
+          exit 1
+
+      # ----------------------------------------------------------------------
+      # Frontend: Node + deps + Playwright browsers
+      # ----------------------------------------------------------------------
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Start Vite dev server
+        working-directory: frontend
+        run: |
+          npm run dev > vite.log 2>&1 &
+          echo $! > vite.pid
+          echo "Waiting for Vite dev server ..."
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:5173 > /dev/null; then
+              echo "Vite is up."
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Vite failed to start; dumping log:"
+          cat vite.log
+          exit 1
+
+      # ----------------------------------------------------------------------
+      # Run the Playwright suite (API + UI)
+      # ----------------------------------------------------------------------
+      - name: Run Playwright tests
+        working-directory: frontend
+        run: npx playwright test
+
+      # ----------------------------------------------------------------------
+      # Diagnostics
+      # ----------------------------------------------------------------------
+      - name: Upload Playwright report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload server logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-logs
+          path: |
+            backend.log
+            frontend/vite.log
+          if-no-files-found: ignore
+          retention-days: 7

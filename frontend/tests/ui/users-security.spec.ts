@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { TEST_PASSWORD, USERS } from '../helpers/api';
 
 async function loginUi(page: Page, username: string, password: string) {
   await page.goto('/login');
@@ -10,7 +11,7 @@ async function loginUi(page: Page, username: string, password: string) {
 
 test.describe('UI security regression: users page', () => {
   test('superadmin can open settings/users page and users table remains stable with safe schema', async ({ page }) => {
-    await loginUi(page, 'admin', '123');
+    await loginUi(page, USERS.admin, TEST_PASSWORD);
 
     const usersResponsePromise = page.waitForResponse((response) => (
       response.request().method() === 'GET'

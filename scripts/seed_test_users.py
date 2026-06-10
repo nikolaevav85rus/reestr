@@ -9,13 +9,18 @@ from app.db.database import AsyncSessionLocal
 from app.models.user import User, Role
 from app.core.security import get_password_hash
 
+# Пароль для тестовых пользователей. По умолчанию Test1234!,
+# но CI/Playwright-хелпер используют TEST_PASSWORD (см. frontend/tests/helpers/api.ts),
+# поэтому позволяем переопределить его переменной окружения.
+TEST_PASSWORD = os.environ.get("TEST_PASSWORD", "Test1234!")
+
 TEST_USERS = [
-    {"ad_login": "admin",       "full_name": "Администратор",       "role_name": "ADMIN",       "password": "Test1234!"},
-    {"ad_login": "initiator1",  "full_name": "Иванов И.И.",         "role_name": "INITIATOR",   "password": "Test1234!"},
-    {"ad_login": "feo1",        "full_name": "Петров П.П.",         "role_name": "FEO",         "password": "Test1234!"},
-    {"ad_login": "cashier1",    "full_name": "Сидоров С.С.",        "role_name": "CASHIER",     "password": "Test1234!"},
-    {"ad_login": "accountant1", "full_name": "Козлова К.К.",        "role_name": "ACCOUNTING",  "password": "Test1234!"},
-    {"ad_login": "director1",   "full_name": "Директоров Д.Д.",     "role_name": "DIRECTOR",    "password": "Test1234!"},
+    {"ad_login": "admin",       "full_name": "Администратор",       "role_name": "ADMIN",       "password": TEST_PASSWORD},
+    {"ad_login": "initiator1",  "full_name": "Иванов И.И.",         "role_name": "INITIATOR",   "password": TEST_PASSWORD},
+    {"ad_login": "feo1",        "full_name": "Петров П.П.",         "role_name": "FEO",         "password": TEST_PASSWORD},
+    {"ad_login": "cashier1",    "full_name": "Сидоров С.С.",        "role_name": "CASHIER",     "password": TEST_PASSWORD},
+    {"ad_login": "accountant1", "full_name": "Козлова К.К.",        "role_name": "ACCOUNTING",  "password": TEST_PASSWORD},
+    {"ad_login": "director1",   "full_name": "Директоров Д.Д.",     "role_name": "DIRECTOR",    "password": TEST_PASSWORD},
 ]
 
 async def seed_users():
@@ -43,7 +48,7 @@ async def seed_users():
             print(f"  [+] Создан: {u['ad_login']} / {u['password']} ({u['role_name']})")
 
         await db.commit()
-        print("\nГотово. Пароль для всех: Test1234!")
+        print(f"\nГотово. Пароль для всех: {TEST_PASSWORD}")
 
 if __name__ == "__main__":
     asyncio.run(seed_users())

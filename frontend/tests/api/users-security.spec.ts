@@ -1,5 +1,5 @@
 import { expect, request, test, type APIRequestContext } from '@playwright/test';
-import { API_BASE_URL, authHeaders, loginApi, USERS, type AuthSession } from '../helpers/api';
+import { API_BASE_URL, TEST_PASSWORD, authHeaders, loginApi, USERS, type AuthSession } from '../helpers/api';
 
 async function withRequestRetry<T>(operation: () => Promise<T>): Promise<T> {
   let lastError: unknown;
@@ -53,7 +53,7 @@ test.describe('API security regression: GET /users/', () => {
   test.beforeAll(async () => {
     api = await request.newContext();
     initiator = await loginApi(api, USERS.initiator);
-    superadmin = await loginWithCredentials(api, 'admin', '123');
+    superadmin = await loginWithCredentials(api, USERS.admin, TEST_PASSWORD);
   });
 
   test.afterAll(async () => {
