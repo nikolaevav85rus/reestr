@@ -4,15 +4,12 @@ import type { Dayjs } from 'dayjs';
 import {
   Table, Tag, Button, Space, Typography, Card, Row, Col,
   Select, Input, Modal, Form, InputNumber, DatePicker,
-  App as AntdApp, Alert, Popconfirm, Tooltip, Upload, Switch, Segmented, Dropdown, Tabs,
+  App as AntdApp, Alert, Tooltip, Upload, Switch, Segmented, Tabs,
 } from 'antd';
-import type { MenuProps, UploadFile } from 'antd';
+import type { UploadFile } from 'antd';
 import {
-  PlusOutlined, EditOutlined, CheckOutlined,
-  CloseOutlined, ClockCircleOutlined,
-  DollarOutlined, UploadOutlined, PaperClipOutlined,
-  ClearOutlined, SendOutlined, ThunderboltOutlined, CopyOutlined,
-  RestOutlined, SettingOutlined, MoreOutlined, DownloadOutlined,
+  PlusOutlined, UploadOutlined, PaperClipOutlined,
+  ClearOutlined, RestOutlined, SettingOutlined, DownloadOutlined,
   FileSearchOutlined,
 } from '@ant-design/icons';
 import apiClient from '../api/apiClient';
@@ -50,13 +47,21 @@ import {
 import {
   buildPaymentRegistryGroupedRows,
   type OrganizationGroupRow as BaseOrganizationGroupRow,
-  type RegistryGroupRow as BaseRegistryGroupRow,
   type RegistryTableRow as BaseRegistryTableRow,
 } from './paymentRegistryGrouping';
 import {
-  resolveRegistryActionDecision,
-  type RegistryActionKey,
-} from './paymentRegistryActions';
+  createRegistryColumnRenderers,
+  isGroupRow,
+  type WorkflowAction,
+} from './registry/registryColumnRenderers';
+import {
+  SMALL_FONT_COLUMN_KEYS,
+  STATUS_COLUMN_KEYS,
+  smallCellStyle,
+  statusCellStyle,
+  pairedCellStyle,
+  nestedCellDividerStyle,
+} from './registry/registryCellStyles';
 
 const { Title, Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -143,7 +148,6 @@ type RequestRow = {
 };
 
 type OrganizationGroupRow = BaseOrganizationGroupRow<RequestRow>;
-type RegistryGroupRow = BaseRegistryGroupRow<RequestRow>;
 type RegistryTableRow = BaseRegistryTableRow<RequestRow>;
 
 // ─── Конфиг колонок ──────────────────────────────────────────────────────────
@@ -257,105 +261,6 @@ function getRelativeWidth(key: string, settings: ColSetting[], secondaryKeys: Se
   const weight = normalizeColSettingWidth(setting?.width ?? 10);
   return `${(weight / total) * 100}%`;
 }
-
-const textCellStyle: React.CSSProperties = {
-  display: 'block',
-  maxWidth: '100%',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-};
-
-const wrapTextCellStyle: React.CSSProperties = {
-  display: 'block',
-  maxWidth: '100%',
-  whiteSpace: 'normal',
-  overflowWrap: 'break-word',
-  wordBreak: 'normal',
-  lineHeight: 1.35,
-};
-
-const smallCellStyle: React.CSSProperties = { fontSize: 12 };
-const smallWrapTextCellStyle: React.CSSProperties = { ...wrapTextCellStyle, ...smallCellStyle };
-const smallTextCellStyle: React.CSSProperties = { ...textCellStyle, ...smallCellStyle };
-const smallLinkWrapTextCellStyle: React.CSSProperties = {
-  ...smallWrapTextCellStyle,
-  padding: 0,
-  height: 'auto',
-  fontWeight: 600,
-  textAlign: 'left',
-};
-const nestedCellDividerStyle: React.CSSProperties = {
-  borderTop: '1px solid #f0f0f0',
-  marginTop: 5,
-  paddingTop: 5,
-};
-const SMALL_FONT_COLUMN_KEYS = new Set(['payment_date', 'request_number', 'creator', 'direction', 'counterparty', 'note', 'description', 'amount']);
-const STATUS_COLUMN_KEYS = new Set(['approval_status', 'contract_status', 'budget_item', 'is_budgeted', 'payment_status']);
-const statusCellStyle: React.CSSProperties = {
-  minWidth: 0,
-  display: 'grid',
-  gap: 5,
-  justifyItems: 'center',
-  alignItems: 'center',
-  textAlign: 'center',
-  fontSize: 12,
-};
-const pairedCellStyle: React.CSSProperties = {
-  minWidth: 0,
-  display: 'grid',
-  gap: 4,
-  justifyItems: 'start',
-  alignItems: 'start',
-  textAlign: 'left',
-  fontSize: 12,
-};
-const statusTagStyle: React.CSSProperties = {
-  minHeight: 20,
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  marginInlineEnd: 0,
-  fontSize: 12,
-  lineHeight: 1.2,
-  maxWidth: '100%',
-  whiteSpace: 'normal',
-  overflowWrap: 'break-word',
-  wordBreak: 'normal',
-  textAlign: 'center',
-};
-const secondaryStatusStyle: React.CSSProperties = {
-  ...statusTagStyle,
-};
-const statusSelectStyle: React.CSSProperties = {
-  width: '100%',
-  maxWidth: 128,
-  fontSize: 12,
-};
-
-const statusSelectLabelStyle: React.CSSProperties = {
-  display: 'block',
-  minWidth: 0,
-  maxWidth: '100%',
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-  textAlign: 'left',
-};
-
-const nativeTitleText = (value: string | null | undefined, style: React.CSSProperties = textCellStyle) => (
-  value
-    ? <span title={value} style={style}>{value}</span>
-    : <Text type="secondary">—</Text>
-);
-
-const statusTag = (label: React.ReactNode, color: string, secondary = false) => (
-  <Tag color={color} style={secondary ? secondaryStatusStyle : statusTagStyle}>{label}</Tag>
-);
-
-const statusSelectLabel = (label: React.ReactNode) => (
-  <span style={statusSelectLabelStyle}>{label}</span>
-);
 
 function approvalStatusLabel(status: string): string {
   if (status === 'MEMO_REQUIRED') return 'Вне бюджета, требуется обоснование';
@@ -1166,19 +1071,7 @@ const PaymentRegistry: React.FC = () => {
     setReasonModal({ open: true, title, action, requestId });
   };
 
-  type WorkflowAction = {
-    key: RegistryActionKey;
-    label: string;
-    icon?: React.ReactNode;
-    danger?: boolean;
-    color?: string;
-    run: () => void;
-    confirmTitle?: string;
-    confirmDescription?: React.ReactNode;
-    confirmOkText?: string;
-  };
-
-  const runWorkflowAction = (action: WorkflowAction) => {
+  const runWorkflowAction = useCallback((action: WorkflowAction) => {
     if (!action.confirmTitle) {
       action.run();
       return;
@@ -1191,507 +1084,51 @@ const PaymentRegistry: React.FC = () => {
       okButtonProps: { danger: action.danger },
       onOk: action.run,
     });
-  };
-
-  const renderPrimaryAction = (action?: WorkflowAction) => {
-    if (!action) return null;
-    const button = (
-      <Button
-        size="small"
-        type="primary"
-        danger={action.danger}
-        icon={action.icon}
-        style={action.color ? { background: action.color, borderColor: action.color } : undefined}
-        onClick={(event) => {
-          event.stopPropagation();
-          if (!action.confirmTitle) action.run();
-        }}
-      >
-        {action.label}
-      </Button>
-    );
-    return action.confirmTitle ? (
-      <Popconfirm
-        title={action.confirmTitle}
-        description={action.confirmDescription}
-        okText={action.confirmOkText ?? action.label}
-        cancelText="Отмена"
-        okButtonProps={{ danger: action.danger }}
-        onConfirm={action.run}
-      >
-        {button}
-      </Popconfirm>
-    ) : button;
-  };
-
-  const renderSecondaryActions = (actions: WorkflowAction[]) => {
-    if (!actions.length) return null;
-    const menu: MenuProps = {
-      items: actions.map(action => ({
-        key: action.key,
-        label: action.label,
-        icon: action.icon,
-        danger: action.danger,
-      })),
-      onClick: ({ key, domEvent }) => {
-        domEvent.stopPropagation();
-        const action = actions.find(item => item.key === key);
-        if (action) runWorkflowAction(action);
-      },
-    };
-    return (
-      <Dropdown menu={menu} trigger={['click']}>
-        <span
-          data-row-action="true"
-          onClick={(event) => event.stopPropagation()}
-          onMouseDown={(event) => event.stopPropagation()}
-        >
-        <Button type="text" size="small" icon={<MoreOutlined />} aria-label="Дополнительные действия" />
-        </span>
-      </Dropdown>
-    );
-  };
+  }, [modal]);
 
   // ─── Колонки таблицы ─────────────────────────────────────────────────────
-  const isGroupRow = (row: unknown): row is RegistryGroupRow => {
-    if (!row || typeof row !== 'object') return false;
-    const rowType = (row as { _type?: unknown })._type;
-    return rowType === 'org' || rowType === 'dircat' || rowType === 'category';
-  };
-
   const getRegistryRowKey = (row: RegistryTableRow): string => {
     if (isGroupRow(row)) return row.key;
     if ('key' in row && typeof row.key === 'string') return row.key;
     return row.id;
   };
-  const COLUMN_RENDERERS: Record<string, any> = {
-    payment_date: {
-      dataIndex: 'payment_date',
-      sorter: (a: any, b: any) => (a.payment_date ?? '').localeCompare(b.payment_date ?? ''),
-      render: (v: string, r: RegistryTableRow) => {
-        if (isGroupRow(r) && r._type === 'org') return (
-          <Text strong style={{ fontSize: 12 }}>
-            {r._name}
-            <Text type="secondary" style={{ fontWeight: 'normal', fontSize: 12, marginLeft: 8 }}>
-              ({r._count} {r._count === 1 ? 'заявка' : r._count < 5 ? 'заявки' : 'заявок'})
-            </Text>
-          </Text>
-        );
-        if (isGroupRow(r) && r._type === 'dircat') return (
-          <span>
-            <Tag color="purple" style={{ marginRight: 4 }}>{r._name}</Tag>
-            <Text type="secondary" style={{ fontSize: 12 }}>({r._count})</Text>
-          </span>
-        );
-        if (isGroupRow(r) && r._type === 'category') {
-          const cfg = CATEGORY_CONFIG[r._catKey];
-          return (
-            <span>
-              <Tag color={cfg?.color ?? 'default'} style={{ marginRight: 4 }}>{cfg?.label ?? r._catKey}</Tag>
-              <Text type="secondary" style={{ fontSize: 12 }}>({r._count})</Text>
-            </span>
-          );
-        }
-        return v
-          ? <span style={smallTextCellStyle}>{new Date(v + 'T00:00:00').toLocaleDateString('ru-RU')}</span>
-          : <Text type="secondary">—</Text>;
-      },
-    },
-    request_number: {
-      dataIndex: 'request_number',
-      sorter: (a: any, b: any) => (a.request_number ?? '').localeCompare(b.request_number ?? ''),
-      render: (v: string, r: any) => {
-        if (isGroupRow(r)) return null;
-        return (
-          <Button
-            type="link"
-            style={smallLinkWrapTextCellStyle}
-            onClick={(event) => {
-              event.stopPropagation();
-              setViewingRequest(r);
-            }}
-          >
-            {v || r.id?.slice(0, 8).toUpperCase() || '—'}
-          </Button>
-        );
-      },
-    },
-    organization: {
-      ellipsis: true,
-      sorter: (a: any, b: any) => (a.organization?.name ?? '').localeCompare(b.organization?.name ?? ''),
-      render: (_: any, r: any) => {
-        if (isGroupRow(r)) return null;
-        return nativeTitleText(r.organization?.name);
-      },
-    },
-    direction: {
-      ellipsis: true,
-      sorter: (a: any, b: any) => (a.direction?.name ?? '').localeCompare(b.direction?.name ?? ''),
-      render: (_: any, r: any) => {
-        if (isGroupRow(r)) return null;
-        return nativeTitleText(r.direction?.name, smallWrapTextCellStyle);
-      },
-    },
-    counterparty: {
-      dataIndex: 'counterparty',
-      ellipsis: false,
-      sorter: (a: any, b: any) => (a.counterparty ?? '').localeCompare(b.counterparty ?? ''),
-      render: (v: string, r: any) => {
-        if (isGroupRow(r)) return null;
-        return nativeTitleText(v, smallWrapTextCellStyle);
-      },
-    },
-    description: {
-      dataIndex: 'description',
-      ellipsis: false,
-      render: (v: string, r: any) => {
-        if (isGroupRow(r)) return null;
-        return nativeTitleText(v, smallWrapTextCellStyle);
-      },
-    },
-    note: {
-      dataIndex: 'note',
-      ellipsis: false,
-      render: (v: string, r: any) => {
-        if (isGroupRow(r)) return null;
-        return nativeTitleText(v, smallWrapTextCellStyle);
-      },
-    },
-    creator: {
-      ellipsis: true,
-      sorter: (a: any, b: any) => (a.creator?.full_name ?? '').localeCompare(b.creator?.full_name ?? ''),
-      render: (_: any, r: any) => {
-        if (isGroupRow(r)) return null;
-        return r.creator
-          ? nativeTitleText(r.creator.full_name, smallWrapTextCellStyle)
-          : <Text type="secondary">—</Text>;
-      },
-    },
-    budget_item: {
-      ellipsis: true,
-      sorter: (a: any, b: any) => (a.budget_item?.name ?? '').localeCompare(b.budget_item?.name ?? ''),
-      render: (_: any, r: any) => {
-        if (isGroupRow(r)) return null;
-        const cfg = r.budget_item?.category ? CATEGORY_CONFIG[r.budget_item.category] : null;
-        return r.budget_item
-          ? statusTag(r.budget_item.name, cfg?.color ?? 'default')
-          : '—';
-      },
-    },
-    amount: {
-      dataIndex: 'amount',
-      align: 'right' as const,
-      sorter: (a: any, b: any) => a.amount - b.amount,
-      render: (v: number, r: RegistryTableRow) => {
-        if (isGroupRow(r) && r._type === 'org') return (
-          <Text strong style={{ color: '#1677ff', fontSize: 12 }}>
-            {v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽
-          </Text>
-        );
-        if (isGroupRow(r) && r._type === 'dircat') return (
-          <Text style={{ color: '#722ed1', fontSize: 12 }}>
-            {v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽
-          </Text>
-        );
-        if (isGroupRow(r) && r._type === 'category') return (
-          <Text style={{ color: '#389e0d', fontSize: 12 }}>
-            {v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽
-          </Text>
-        );
-        return <Text strong style={smallCellStyle}>{v.toLocaleString('ru-RU', { minimumFractionDigits: 2 })} ₽</Text>;
-      },
-    },
-    approval_status: {
-      dataIndex: 'approval_status',
-      sorter: (a: any, b: any) => (a.approval_status ?? '').localeCompare(b.approval_status ?? ''),
-      render: (v: string, r: any) => {
-        if (isGroupRow(r)) return null;
-        const cfg = APPROVAL_CONFIG[v] ?? { label: v, color: 'default' };
-        if (v === 'MEMO_REQUIRED') {
-          return (
-            <div style={statusCellStyle}>
-              {statusTag('Вне бюджета', cfg.color)}
-              <Tag color="orange" style={secondaryStatusStyle}>Требуется обоснование</Tag>
-            </div>
-          );
-        }
-        if (v === 'PENDING_MEMO') {
-          return (
-            <div style={statusCellStyle}>
-              {statusTag(cfg.label, cfg.color)}
-              <Tag color="geekblue" style={secondaryStatusStyle}>Ожидание согласования</Tag>
-            </div>
-          );
-        }
-        return statusTag(cfg.label, cfg.color);
-      },
-    },
-    contract_status: {
-      dataIndex: 'contract_status',
-      sorter: (a: any, b: any) => CONTRACT_KEY(a.contract_status).localeCompare(CONTRACT_KEY(b.contract_status)),
-      render: (v: boolean | null, r: any) => {
-        if (isGroupRow(r)) return null;
-        const key = CONTRACT_KEY(v);
-        const cfg = CONTRACT_CONFIG[key];
-        if (canContract) {
-          return (
-            <Select
-              size="small"
-              value={key}
-              className="registry-status-select"
-              style={statusSelectStyle}
-              options={Object.entries(CONTRACT_CONFIG).map(([k, c]) => ({
-                value: k,
-                label: statusSelectLabel(c.label),
-              }))}
-              onChange={(newKey) => {
-                const newVal = newKey === 'null' ? null : newKey === 'true';
-                handleSetContract(r.id, newVal);
-              }}
-            />
-          );
-        }
-        return statusTag(cfg.label, cfg.color, true);
-      },
-    },
-    is_budgeted: {
-      dataIndex: 'is_budgeted',
-      sorter: (a: any, b: any) => CONTRACT_KEY(a.is_budgeted).localeCompare(CONTRACT_KEY(b.is_budgeted)),
-      render: (v: boolean | null, r: any) => {
-        if (isGroupRow(r)) return null;
-        const key = CONTRACT_KEY(v);
-        const cfg = CONTRACT_CONFIG[key];
-        if (canApprove) {
-          return (
-            <Select
-              size="small"
-              value={key}
-              className="registry-status-select"
-              style={statusSelectStyle}
-              options={Object.entries(CONTRACT_CONFIG).map(([k, c]) => ({
-                value: k,
-                label: statusSelectLabel(c.label),
-              }))}
-              onChange={(newKey) => {
-                const newVal = newKey === 'null' ? null : newKey === 'true';
-                handleSetBudget(r.id, newVal);
-              }}
-            />
-          );
-        }
-        return statusTag(cfg.label, cfg.color, true);
-      },
-    },
-    payment_status: {
-      dataIndex: 'payment_status',
-      sorter: (a: any, b: any) => (a.payment_status ?? '').localeCompare(b.payment_status ?? ''),
-      render: (v: string, r: any) => {
-        if (isGroupRow(r)) return null;
-        const cfg = PAYMENT_CONFIG[v] ?? { label: v, color: 'default' };
-        return statusTag(cfg.label, cfg.color);
-      },
-    },
-    special_icon: {
-      dataIndex: 'special_order',
-      align: 'center' as const,
-      render: (v: boolean, r: any) => {
-        if (isGroupRow(r)) return null;
-        if (r.approval_status === 'PENDING_GATE') {
-          return (
-            <Tooltip title={`Требует исключения из регламента: ${r.gate_reason || ''}`}>
-              <ThunderboltOutlined style={{ color: '#722ed1' }} />
-            </Tooltip>
-          );
-        }
-        if (v) {
-          return (
-            <Tooltip title={`Исключение разрешено ФЭО${r.gate_reason ? `: ${r.gate_reason}` : ''}`}>
-              <ThunderboltOutlined style={{ color: '#fa8c16' }} />
-            </Tooltip>
-          );
-        }
-        return null;
-      },
-    },
-    actions: {
-      align: 'center' as const,
-      render: (_: any, r: any) => {
-        if (isGroupRow(r)) return null;
-        const decision = resolveRegistryActionDecision(
-          r,
-          {
-            canCreate,
-            canEditAll,
-            canApprove,
-            canGateApprove,
-            canMemoApprove,
-            canPay,
-            canSuspend,
-            canMarkDeletion,
-          },
-          {
-            id: user?.id,
-            isSuperadmin: !!user?.is_superadmin,
-          },
-        );
-        const { primaryActionKey, secondaryActionKeys } = decision;
-        const requestSummary = `${r.counterparty} — ${r.amount?.toLocaleString('ru-RU')} ₽`;
-        const primaryAction: WorkflowAction | undefined = (() => {
-          switch (primaryActionKey) {
-            case 'submit':
-              return {
-                key: 'submit', label: 'Отправить', icon: <SendOutlined />,
-                run: () => handleSubmit(r.id),
-                confirmTitle: 'Отправить заявку на согласование?',
-                confirmDescription: requestSummary,
-                confirmOkText: 'Отправить',
-              };
-            case 'approve-exception':
-              return {
-                key: 'approve-exception', label: 'Разрешить исключение', icon: <CheckOutlined />, color: '#722ed1',
-                run: () => setGateModal({ open: true, type: 'approve', requestId: r.id, violation: r.gate_reason || '' }),
-              };
-            case 'approve':
-              return {
-                key: 'approve', label: 'Согласовать', icon: <CheckOutlined />,
-                run: () => handleAction('approve', r.id),
-              };
-            case 'memo-reason':
-              return {
-                key: 'memo-reason', label: 'Обосновать', icon: <CheckOutlined />, color: '#fa8c16',
-                run: () => openReasonModal('memo_reason', r.id, 'Обоснование вне бюджета'),
-              };
-            case 'approve-memo':
-              return {
-                key: 'approve-memo', label: 'Утвердить вне бюджета', icon: <CheckOutlined />,
-                run: () => handleApproveMemo(r.id),
-                confirmTitle: 'Утвердить внебюджетный платёж?',
-                confirmDescription: requestSummary,
-                confirmOkText: 'Утвердить',
-              };
-            case 'pay':
-              return {
-                key: 'pay', label: 'Оплатить', icon: <DollarOutlined />, color: '#52c41a',
-                run: () => handleAction('pay', r.id),
-                confirmTitle: 'Отметить как оплаченную?',
-                confirmDescription: requestSummary,
-                confirmOkText: 'Оплатить',
-              };
-            case 'suspend':
-              return {
-                key: 'suspend', label: 'Отложить', icon: <ClockCircleOutlined />, color: '#eb2f96',
-                run: () => setSuspendModal({ open: true, requestId: r.id }),
-              };
-            case 'unsuspend':
-              return {
-                key: 'unsuspend', label: 'Вернуть на согласование', icon: <ClockCircleOutlined />, color: '#fa8c16',
-                run: () => setUnsuspendModal({ open: true, requestId: r.id }),
-              };
-            case 'move-to-draft':
-              return {
-                key: 'move-to-draft', label: 'Вернуть в черновик', icon: <ClockCircleOutlined />, color: '#fa8c16',
-                run: () => setMoveDraftModal({ open: true, requestId: r.id }),
-              };
-            default:
-              return undefined;
-          }
-        })();
-
-        const secondaryActions: WorkflowAction[] = [];
-        for (const actionKey of secondaryActionKeys) {
-          switch (actionKey) {
-            case 'file':
-              if (!r.file_path) break;
-              secondaryActions.push({ key: 'file', label: 'Открыть файл', icon: <PaperClipOutlined />, run: () => openFile(r.id, r.file_path) });
-              break;
-            case 'edit':
-              secondaryActions.push({ key: 'edit', label: 'Редактировать', icon: <EditOutlined />, run: () => openEdit(r) });
-              break;
-            case 'copy':
-              secondaryActions.push({ key: 'copy', label: 'Копировать', icon: <CopyOutlined />, run: () => openCopy(r) });
-              break;
-            case 'mark-deletion':
-              secondaryActions.push({
-                key: 'mark-deletion',
-                label: r.is_marked_for_deletion ? 'Снять пометку на удаление' : 'Пометить на удаление',
-                icon: <RestOutlined />,
-                danger: !r.is_marked_for_deletion,
-                run: () => handleMarkDeletion(r.id, r.is_marked_for_deletion),
-                confirmTitle: r.is_marked_for_deletion ? 'Снять пометку на удаление?' : 'Пометить на удаление?',
-                confirmDescription: r.is_marked_for_deletion ? 'Заявка будет восстановлена' : 'Заявка будет удалена администратором при очистке',
-                confirmOkText: r.is_marked_for_deletion ? 'Снять' : 'Пометить',
-              });
-              break;
-            case 'reject':
-              secondaryActions.push({ key: 'reject', label: 'Отклонить', icon: <CloseOutlined />, danger: true, run: () => openReasonModal('reject', r.id, 'Причина отклонения') });
-              break;
-            case 'clarify':
-              secondaryActions.push({ key: 'clarify', label: 'На уточнение', icon: <ClockCircleOutlined />, run: () => openReasonModal('clarify', r.id, 'Комментарий для уточнения') });
-              break;
-            case 'postpone':
-              secondaryActions.push({ key: 'postpone', label: 'Перенести', icon: <ClockCircleOutlined />, run: () => setPostponeModal({ open: true, requestId: r.id }) });
-              break;
-            case 'suspend-pending':
-              secondaryActions.push({ key: 'suspend-pending', label: 'Отложить', icon: <ClockCircleOutlined />, run: () => setSuspendModal({ open: true, requestId: r.id }) });
-              break;
-            case 'postpone-approved':
-              secondaryActions.push({ key: 'postpone-approved', label: 'Перенести', icon: <ClockCircleOutlined />, run: () => setPostponeModal({ open: true, requestId: r.id }) });
-              break;
-            case 'reject-exception':
-              secondaryActions.push({
-                key: 'reject-exception', label: 'Отклонить исключение', icon: <CloseOutlined />, danger: true,
-                run: () => setGateModal({ open: true, type: 'reject', requestId: r.id, violation: r.gate_reason || '' }),
-              });
-              break;
-            case 'memo-reason':
-              secondaryActions.push({
-                key: 'memo-reason',
-                label: 'Обосновать',
-                icon: <CheckOutlined />,
-                run: () => openReasonModal('memo_reason', r.id, 'Обоснование вне бюджета'),
-              });
-              break;
-            case 'cancel-memo':
-              secondaryActions.push({
-                key: 'cancel-memo',
-                label: 'Отменить',
-                icon: <CloseOutlined />,
-                danger: true,
-                run: () => openReasonModal('cancel_memo', r.id, 'Причина отмены'),
-              });
-              break;
-            case 'reject-memo':
-              secondaryActions.push({
-                key: 'reject-memo', label: 'Отклонить вне бюджета', icon: <CloseOutlined />, danger: true,
-                run: () => setRejectMemoModal({ open: true, requestId: r.id }),
-              });
-              break;
-            case 'suspend':
-              secondaryActions.push({ key: 'suspend', label: 'Отложить', icon: <ClockCircleOutlined />, run: () => setSuspendModal({ open: true, requestId: r.id }) });
-              break;
-            case 'move-to-draft':
-              secondaryActions.push({ key: 'move-to-draft', label: 'Вернуть в черновик', icon: <ClockCircleOutlined />, run: () => setMoveDraftModal({ open: true, requestId: r.id }) });
-              break;
-            default:
-              break;
-          }
-        }
-
-        return (
-          <Space
-            size={4}
-            wrap={false}
-            data-row-action="true"
-            onClick={(event) => event.stopPropagation()}
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            {renderPrimaryAction(primaryAction)}
-            {renderSecondaryActions(secondaryActions)}
-          </Space>
-        );
-      },
-    },
-  };
+  const COLUMN_RENDERERS = useMemo(
+    () => createRegistryColumnRenderers({
+      setViewingRequest,
+      canContract,
+      canApprove,
+      handleSetContract,
+      handleSetBudget,
+      canCreate,
+      canEditAll,
+      canGateApprove,
+      canMemoApprove,
+      canPay,
+      canSuspend,
+      canMarkDeletion,
+      user,
+      handleSubmit,
+      handleAction,
+      handleApproveMemo,
+      handleMarkDeletion,
+      openReasonModal,
+      openFile,
+      openEdit,
+      openCopy,
+      setGateModal,
+      setSuspendModal,
+      setUnsuspendModal,
+      setMoveDraftModal,
+      setPostponeModal,
+      setRejectMemoModal,
+      confirmAction: runWorkflowAction,
+    }),
+    [
+      canContract, canApprove, canCreate, canEditAll, canGateApprove,
+      canMemoApprove, canPay, canSuspend, canMarkDeletion, user,
+      runWorkflowAction,
+    ],
+  );
   const renderRequestActions = (r: RequestRow) => COLUMN_RENDERERS.actions.render(null, r);
   const columns = useMemo(
     () => buildColumns(colSettings, COLUMN_RENDERERS, isGrouped),
