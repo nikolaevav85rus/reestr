@@ -1,17 +1,20 @@
-import React, { useState, useEffect } from 'react';
-import { ConfigProvider, App as AntdApp, Layout, Menu, Button, Tag, Tooltip, Badge, Dropdown, Typography } from 'antd';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
+import { ConfigProvider, App as AntdApp, Layout, Menu, Button, Tag, Tooltip, Badge, Dropdown, Typography, Spin } from 'antd';
 
 import { BrowserRouter as Router, Routes, Route, Navigate, Link, useLocation, useNavigate } from 'react-router-dom';
 import { DashboardOutlined, LogoutOutlined, BankOutlined, CalendarOutlined, MenuFoldOutlined, MenuUnfoldOutlined, SettingOutlined, BellOutlined, DollarOutlined } from '@ant-design/icons';
 import apiClient from './api/apiClient';
 
 import LoginPage from './pages/Login';
-import SettingsPage from './pages/SettingsPage';
-import OrganizationsPage from './pages/Organizations';
-import CalendarPage from './pages/CalendarPage';
-import PaymentRegistry from './pages/PaymentRegistry';
-import CashierWorkspace from './pages/CashierWorkspace';
-import NotificationsPage from './pages/NotificationsPage';
+
+// Route-based code-splitting: heavy authenticated pages load as separate chunks.
+// LoginPage stays eager (entry/unauthenticated screen).
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const OrganizationsPage = lazy(() => import('./pages/Organizations'));
+const CalendarPage = lazy(() => import('./pages/CalendarPage'));
+const PaymentRegistry = lazy(() => import('./pages/PaymentRegistry'));
+const CashierWorkspace = lazy(() => import('./pages/CashierWorkspace'));
+const NotificationsPage = lazy(() => import('./pages/NotificationsPage'));
 
 import { useAuthStore } from './store/authStore';
 
@@ -249,22 +252,31 @@ const MainLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   );
 };
 
+// Centered fallback shown while a lazy page chunk is loading.
+const PageFallback: React.FC = () => (
+  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+    <Spin size="large" />
+  </div>
+);
+
 const App: React.FC = () => {
   return (
     <ConfigProvider theme={{ token: { colorPrimary: '#1890ff' } }}>
       <AntdApp>
         <Router>
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/dashboard" element={<ProtectedRoute><MainLayout><PaymentRegistry /></MainLayout></ProtectedRoute>} />
-            <Route path="/notifications" element={<ProtectedRoute><MainLayout><NotificationsPage /></MainLayout></ProtectedRoute>} />
-            <Route path="/cashier" element={<PermissionRoute permissions={['cashier_workspace_view']}><MainLayout><CashierWorkspace /></MainLayout></PermissionRoute>} />
-            <Route path="/organizations" element={<PermissionRoute permissions={['dict_view']}><MainLayout><OrganizationsPage /></MainLayout></PermissionRoute>} />
-            <Route path="/calendar" element={<PermissionRoute permissions={['cal_view']}><MainLayout><CalendarPage /></MainLayout></PermissionRoute>} />
-            <Route path="/settings" element={<PermissionRoute permissions={['user_view', 'rbac_manage']}><MainLayout><SettingsPage /></MainLayout></PermissionRoute>} />
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="*" element={<Navigate to="/login" replace />} />
-          </Routes>
+          <Suspense fallback={<PageFallback />}>
+            <Routes>
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="/dashboard" element={<ProtectedRoute><MainLayout><PaymentRegistry /></MainLayout></ProtectedRoute>} />
+              <Route path="/notifications" element={<ProtectedRoute><MainLayout><NotificationsPage /></MainLayout></ProtectedRoute>} />
+              <Route path="/cashier" element={<PermissionRoute permissions={['cashier_workspace_view']}><MainLayout><CashierWorkspace /></MainLayout></PermissionRoute>} />
+              <Route path="/organizations" element={<PermissionRoute permissions={['dict_view']}><MainLayout><OrganizationsPage /></MainLayout></PermissionRoute>} />
+              <Route path="/calendar" element={<PermissionRoute permissions={['cal_view']}><MainLayout><CalendarPage /></MainLayout></PermissionRoute>} />
+              <Route path="/settings" element={<PermissionRoute permissions={['user_view', 'rbac_manage']}><MainLayout><SettingsPage /></MainLayout></PermissionRoute>} />
+              <Route path="/" element={<Navigate to="/dashboard" replace />} />
+              <Route path="*" element={<Navigate to="/login" replace />} />
+            </Routes>
+          </Suspense>
         </Router>
       </AntdApp>
     </ConfigProvider>
