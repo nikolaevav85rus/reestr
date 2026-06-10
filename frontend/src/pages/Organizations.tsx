@@ -251,9 +251,9 @@ const OrganizationsPage: React.FC = () => {
     title: 'Действия', width: 100, align: 'center' as const,
     render: (_: any, r: any) => (
       <Space size="small">
-        <HasPermission permission="dict_edit"><Button type="text" size="small" icon={<EditOutlined />} onClick={() => editFn(r)} /></HasPermission>
+        <HasPermission permission="dict_edit"><Button type="text" size="small" icon={<EditOutlined />} aria-label="Редактировать" onClick={() => editFn(r)} /></HasPermission>
         <HasPermission permission="dict_delete">
-          <Popconfirm title={delTitle} onConfirm={() => handleDelete(url, r.id)}><Button type="text" size="small" danger icon={<DeleteOutlined />} /></Popconfirm>
+          <Popconfirm title={delTitle} onConfirm={() => handleDelete(url, r.id)}><Button type="text" size="small" danger icon={<DeleteOutlined />} aria-label="Удалить" /></Popconfirm>
         </HasPermission>
       </Space>
     )
@@ -321,6 +321,7 @@ const OrganizationsPage: React.FC = () => {
               type="text"
               size="small"
               icon={<EditOutlined />}
+              aria-label="Редактировать юр. лицо"
               onClick={() => {
                 setEditingOrg(r);
                 orgForm.setFieldsValue({ ...r, prefix: r.prefix ?? '' });
@@ -330,7 +331,7 @@ const OrganizationsPage: React.FC = () => {
           </HasPermission>
           <HasPermission permission="dict_delete">
             <Popconfirm title="Удалить юр. лицо?" onConfirm={() => handleDelete('/dict/organizations', r.id)}>
-              <Button type="text" size="small" danger icon={<DeleteOutlined />} />
+              <Button type="text" size="small" danger icon={<DeleteOutlined />} aria-label="Удалить юр. лицо" />
             </Popconfirm>
           </HasPermission>
         </Space>

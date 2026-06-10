@@ -144,6 +144,7 @@ const NotificationBell: React.FC = () => {
         <Button
           type="text"
           icon={<BellOutlined />}
+          aria-label="Уведомления"
           style={{ color: 'rgba(255,255,255,0.65)', fontSize: 16 }}
         />
       </Badge>
@@ -176,6 +177,7 @@ const MainLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             <Button
               type="text"
               icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              aria-label={collapsed ? 'Развернуть меню' : 'Свернуть меню'}
               onClick={() => setCollapsed(c => { const next = !c; localStorage.setItem('ui_sidebar_collapsed', String(next)); return next; })}
               style={{ color: 'rgba(255,255,255,0.65)', fontSize: 16 }}
             />

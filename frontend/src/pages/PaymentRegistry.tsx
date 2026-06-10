@@ -1383,19 +1383,19 @@ const PaymentRegistry: React.FC = () => {
           </Col>
           <Col>
             <Tooltip title="Сбросить фильтры">
-              <Button icon={<ClearOutlined />} onClick={resetFilters} />
+              <Button icon={<ClearOutlined />} onClick={resetFilters} aria-label="Сбросить фильтры" />
             </Tooltip>
           </Col>
           {canExportExcel && (
             <Col>
               <Tooltip title="Выгрузить текущий вид в Excel">
-                <Button icon={<DownloadOutlined />} onClick={exportCurrentView} disabled={!displayedRequests.length} />
+                <Button icon={<DownloadOutlined />} onClick={exportCurrentView} disabled={!displayedRequests.length} aria-label="Выгрузить в Excel" />
               </Tooltip>
             </Col>
           )}
           <Col>
             <Tooltip title="Настройка колонок">
-              <Button icon={<SettingOutlined />} onClick={() => setColDrawerOpen(true)} />
+              <Button icon={<SettingOutlined />} onClick={() => setColDrawerOpen(true)} aria-label="Настройка колонок" />
             </Tooltip>
           </Col>
         </Row>

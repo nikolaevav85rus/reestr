@@ -707,7 +707,7 @@ const CashierWorkspace: React.FC = () => {
             </Button>
           )}
           <Tooltip title="Настройка колонок">
-            <Button icon={<SettingOutlined />} onClick={() => setColDrawerOpen(true)} />
+            <Button icon={<SettingOutlined />} onClick={() => setColDrawerOpen(true)} aria-label="Настройка колонок" />
           </Tooltip>
         </Space>
       </Row>
@@ -755,7 +755,7 @@ const CashierWorkspace: React.FC = () => {
           <Col><InputNumber style={{ width: 110 }} placeholder="Сумма до" value={filterAmountTo} onChange={v => setFilterAmountTo(v ?? undefined)} min={0} /></Col>
           <Col>
             <Tooltip title="Сбросить фильтры">
-              <Button icon={<ClearOutlined />} onClick={resetFilters} />
+              <Button icon={<ClearOutlined />} onClick={resetFilters} aria-label="Сбросить фильтры" />
             </Tooltip>
           </Col>
         </Row>

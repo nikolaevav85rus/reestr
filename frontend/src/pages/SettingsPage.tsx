@@ -183,7 +183,7 @@ const MarkedDeletionSettings: React.FC = () => {
       width: 60,
       render: (_: any, r: any) => (
         <Popconfirm title="Снять пометку?" onConfirm={() => handleUnmark(r.id)} okText="Снять" cancelText="Отмена">
-          <Button type="text" size="small" icon={<RestOutlined />} title="Снять пометку" />
+          <Button type="text" size="small" icon={<RestOutlined />} title="Снять пометку" aria-label="Снять пометку" />
         </Popconfirm>
       ),
     },

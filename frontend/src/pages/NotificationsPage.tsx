@@ -147,7 +147,7 @@ const NotificationsPage: React.FC = () => {
               ]}
             />
             <Tooltip title="Обновить">
-              <Button icon={<ReloadOutlined />} onClick={handleRefresh} loading={loading} />
+              <Button icon={<ReloadOutlined />} onClick={handleRefresh} loading={loading} aria-label="Обновить" />
             </Tooltip>
             <Button
               icon={<CheckOutlined />}

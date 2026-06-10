@@ -148,12 +148,14 @@ const ColSettingsDrawer: React.FC<Props> = ({ open, onClose, settings, onChange,
               <Button
                 size="small"
                 icon={<ArrowUpOutlined />}
+                aria-label="Переместить колонку вверх"
                 disabled={idx === 0 || isSecondary}
                 onClick={() => swap(idx, idx - 1)}
               />
               <Button
                 size="small"
                 icon={<ArrowDownOutlined />}
+                aria-label="Переместить колонку вниз"
                 disabled={idx === sorted.length - 1 || isSecondary}
                 onClick={() => swap(idx, idx + 1)}
               />

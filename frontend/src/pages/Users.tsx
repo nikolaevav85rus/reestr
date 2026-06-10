@@ -189,10 +189,10 @@ const UsersPage: React.FC = () => {
     },
     { title: 'Действия', width: 100, align: 'center' as const, render: (_: any, r: any) => (
       <Space size="small">
-        <HasPermission permission="user_edit"><Button type="text" size="small" icon={<EditOutlined />} onClick={() => handleEditUser(r)} /></HasPermission>
-        <HasPermission permission="user_edit"><Button type="text" size="small" title="Организации пользователя" icon={<BankOutlined />} onClick={() => handleManageOrgs(r)} /></HasPermission>
+        <HasPermission permission="user_edit"><Button type="text" size="small" icon={<EditOutlined />} aria-label="Редактировать сотрудника" onClick={() => handleEditUser(r)} /></HasPermission>
+        <HasPermission permission="user_edit"><Button type="text" size="small" title="Организации пользователя" aria-label="Организации пользователя" icon={<BankOutlined />} onClick={() => handleManageOrgs(r)} /></HasPermission>
         <HasPermission permission="user_delete">
-          <Popconfirm title="Удалить сотрудника?" onConfirm={() => handleDeleteUser(r.id)}><Button type="text" size="small" danger icon={<DeleteOutlined />} /></Popconfirm>
+          <Popconfirm title="Удалить сотрудника?" onConfirm={() => handleDeleteUser(r.id)}><Button type="text" size="small" danger icon={<DeleteOutlined />} aria-label="Удалить сотрудника" /></Popconfirm>
         </HasPermission>
       </Space>
     )}
@@ -233,14 +233,14 @@ const UsersPage: React.FC = () => {
             <Space size="middle">
               <Button type="link" size="small" disabled={r.is_superadmin} onClick={() => { setSelectedRole(r); matrixForm.setFieldsValue({ permissions: r.permissions?.map((p: any) => p.name) || [] }); setIsRoleModalOpen(true); }}>Права</Button>
               <HasPermission permission="user_edit">
-                 <Button type="text" size="small" icon={<EditOutlined />} disabled={r.is_superadmin} onClick={() => { setSelectedRole(r); roleEditForm.setFieldsValue(r); setIsRoleEditModalOpen(true); }} />
+                 <Button type="text" size="small" icon={<EditOutlined />} aria-label="Редактировать роль" disabled={r.is_superadmin} onClick={() => { setSelectedRole(r); roleEditForm.setFieldsValue(r); setIsRoleEditModalOpen(true); }} />
               </HasPermission>
               <HasPermission permission="user_delete">
                  <Popconfirm title="Удалить роль?" onConfirm={async () => {
                    try { await apiClient.delete(`/dict/roles/${r.id}`); messageApi.success('Роль удалена'); fetchData(); }
                    catch (error: unknown) { messageApi.error(getErrorMessage(error, 'Ошибка')); }
                  }} disabled={r.is_superadmin}>
-                    <Button type="text" size="small" danger icon={<DeleteOutlined />} disabled={r.is_superadmin} />
+                    <Button type="text" size="small" danger icon={<DeleteOutlined />} aria-label="Удалить роль" disabled={r.is_superadmin} />
                  </Popconfirm>
               </HasPermission>
             </Space>
