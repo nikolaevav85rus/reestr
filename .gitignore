@@ -61,5 +61,7 @@ struct.txt
 
 # ===== Local test/review artifacts =====
 frontend/playwright-report/
+**/playwright-report/
 test-results/
+**/test-results/
 documentation/code-review-remarks.md

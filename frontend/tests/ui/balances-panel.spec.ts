@@ -64,7 +64,16 @@ async function selectAntdOption(
   const option = dropdown.locator('.ant-select-item-option').filter({ hasText: optionText }).first();
   await expect(option).toBeVisible({ timeout: 15_000 });
   await option.click();
-  await expect(page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')).toHaveCount(0, { timeout: 10_000 });
+  // Confirm the click registered (auto-retries; не зависит от анимации закрытия).
+  await expect(option).toHaveClass(/ant-select-item-option-selected/, { timeout: 10_000 });
+  // Подтолкнуть закрытие дропдауна и дождаться исчезновения.
+  await page.keyboard.press('Escape');
+  await expect
+    .poll(
+      async () => page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').count(),
+      { timeout: 15_000 },
+    )
+    .toBe(0);
 }
 
 async function assertDailyCrudOperationsDocumented(api: APIRequestContext) {

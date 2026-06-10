@@ -57,7 +57,22 @@ async function selectAntdOption(
   const option = dropdown.locator('.ant-select-item-option').filter({ hasText: optionText }).first();
   await expect(option).toBeVisible({ timeout: 15_000 });
   await option.click();
-  await expect(page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)')).toHaveCount(0, { timeout: 10_000 });
+
+  // Confirm the click registered by asserting the option is marked selected.
+  // This auto-retries and does not depend on the dropdown's close animation.
+  await expect(option).toHaveClass(/ant-select-item-option-selected/, { timeout: 10_000 });
+
+  // Nudge the dropdown closed (in case it lingers) and wait for it to go away.
+  // We tolerate the close animation lagging: the dropdown is considered "done"
+  // once it is either detached or carries the hidden class.
+  await page.keyboard.press('Escape');
+  await expect
+    .poll(
+      async () =>
+        page.locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden)').count(),
+      { timeout: 15_000 },
+    )
+    .toBe(0);
 }
 
 async function assertDeleteOperationDocumented(api: APIRequestContext) {
