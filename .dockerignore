@@ -1,0 +1,46 @@
+# Backend build context (root). Keep it lean and free of host-only artifacts.
+
+# Python virtualenv / caches
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node / frontend (the frontend has its own build context + Dockerfile)
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/playwright-report/
+frontend/test-results/
+
+# Secrets & local env (never bake into the image)
+.env
+.env.*
+!.env.docker.example
+
+# Database backups / dumps
+backup_*.sql
+
+# Docs & local notes — not needed at runtime
+docs/
+documentation/
+Tracker/
+
+# Logs & test artifacts
+*.log
+logs/
+test-results/
+playwright-report/
+**/playwright-report/
+
+# Git & IDE
+.git/
+.github/
+.idea/
+.vscode/
+.claude/
+
+# Generated trees / scratch
+project_structure.txt
+struct.txt
+generate_tree.py

@@ -1,5 +1,40 @@
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    EnvSettingsSource,
+    PydanticBaseSettingsSource,
+)
+
+# list[...] fields that may be supplied via the environment as a plain
+# comma-separated string (e.g. CORS_ORIGINS=http://a,http://b). pydantic-settings
+# treats list fields as "complex" and tries to json.loads() the env value first,
+# which raises on a comma string. These sources skip that JSON step for the
+# listed fields and hand the raw string to each field's mode="before" validator,
+# which already splits on commas. (NoDecode would do this but only exists in
+# pydantic-settings >= 2.3; this works on the pinned 2.2.x as well.)
+_COMMA_LIST_FIELDS = {
+    "CORS_ORIGINS",
+    "UPLOAD_ALLOWED_EXTENSIONS",
+    "UPLOAD_ALLOWED_CONTENT_TYPES",
+}
+
+
+def _prepare_comma_list(super_prepare, field_name, field, value, value_is_complex):
+    if field_name in _COMMA_LIST_FIELDS and isinstance(value, str):
+        return value
+    return super_prepare(field_name, field, value, value_is_complex)
+
+
+class _CommaListEnvSource(EnvSettingsSource):
+    def prepare_field_value(self, field_name, field, value, value_is_complex):
+        return _prepare_comma_list(super().prepare_field_value, field_name, field, value, value_is_complex)
+
+
+class _CommaListDotEnvSource(DotEnvSettingsSource):
+    def prepare_field_value(self, field_name, field, value, value_is_complex):
+        return _prepare_comma_list(super().prepare_field_value, field_name, field, value, value_is_complex)
+
 
 class Settings(BaseSettings):
     """
@@ -141,6 +176,25 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ):
+        # Swap the default env/dotenv sources for comma-tolerant ones so list
+        # settings can be provided as "a,b,c" via the environment (12-factor /
+        # Docker). Default precedence is preserved: init > env > dotenv > secrets.
+        return (
+            init_settings,
+            _CommaListEnvSource(settings_cls),
+            _CommaListDotEnvSource(settings_cls),
+            file_secret_settings,
+        )
 
 # Создаем объект настроек, который будем импортировать в другие файлы
 settings = Settings()

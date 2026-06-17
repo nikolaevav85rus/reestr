@@ -1,0 +1,34 @@
+# Normalize line endings: all text files are stored and checked out with LF.
+# The repo is developed on Windows (git logs CRLF checkouts); the shell
+# entrypoint and nginx.conf MUST be LF or they break inside Linux containers.
+* text=eol=lf
+
+# Be explicit about the files that absolutely must stay LF.
+*.sh             text eol=lf
+docker/*.sh      text eol=lf
+frontend/nginx.conf text eol=lf
+Dockerfile       text eol=lf
+*.Dockerfile     text eol=lf
+Makefile         text eol=lf
+
+# Windows-only helper scripts stay CRLF (they only ever run on Windows).
+*.bat            text eol=crlf
+*.cmd            text eol=crlf
+*.ps1            text eol=crlf
+
+# Binary files: never apply text/EOL normalization (would corrupt them).
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.pdf   binary
+*.xlsx  binary
+*.xls   binary
+*.zip   binary
+*.gz    binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.eot   binary

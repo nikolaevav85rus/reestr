@@ -1,0 +1,93 @@
+# ---------------------------------------------------------------------------
+# Full Treasury stack for a portable Linux deploy:
+#   db        -> PostgreSQL 16 (named volume, healthcheck)
+#   backend   -> FastAPI/uvicorn on :8080; runs migrations on start
+#   scheduler -> APScheduler in its OWN process (no double EOD job)
+#   frontend  -> nginx serving the SPA + reverse-proxying /api to backend
+#
+# Quick start on a clean machine:
+#   cp .env.docker.example .env.docker   # then set a strong SECRET_KEY
+#   docker compose build
+#   docker compose up -d
+#   # first run only — seed RBAC + demo NSI + test users (admin1/1234):
+#   docker compose run --rm -e RUN_SEED=true backend python scripts/seed.py
+#
+# All app/db config comes from .env.docker (single source of truth).
+# Host port mappings can be overridden via shell env: FRONTEND_PORT, BACKEND_PORT.
+# ---------------------------------------------------------------------------
+
+services:
+  db:
+    image: postgres:16
+    env_file: .env.docker
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      # $$ defers expansion to the container shell, which reads POSTGRES_*
+      # injected from .env.docker — keeps credentials in one place.
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env.docker
+    environment:
+      # Migrations run here (and only here); scheduler stays out of it.
+      RUN_MIGRATIONS: "true"
+      # Scheduler runs as its own service — never inside the API process.
+      RUN_SCHEDULER_IN_APP: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Uploaded invoice files (get_storage_path() -> <root>/storage).
+      - storage_data:/app/storage
+      # app_settings.json (storage_path override) -> <root>/data.
+      - app_data:/app/data
+    ports:
+      # Direct backend access for /health checks and API debugging.
+      - "${BACKEND_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["python", "-m", "app.scheduler"]
+    env_file: .env.docker
+    environment:
+      # Only the backend migrates; the scheduler just waits for the DB.
+      RUN_MIGRATIONS: "false"
+      RUN_SCHEDULER_IN_APP: "false"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      # The app entry point: open http://localhost:8080
+      - "${FRONTEND_PORT:-8080}:80"
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  storage_data:
+  app_data:

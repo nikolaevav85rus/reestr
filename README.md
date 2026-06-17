@@ -11,8 +11,94 @@
 - `documentation/` — рабочая документация проекта.
 - `start_backend.bat` — запуск backend на Windows.
 - `start_all.bat` — совместный запуск frontend и backend.
+- `Dockerfile`, `frontend/Dockerfile`, `docker-compose.yml`, `docker/` — контейнеризация для переносимого деплоя (Linux).
+- `Makefile` — Linux-аналоги `*.bat` (через `docker compose`).
 
-## Требования
+## Запуск в Docker (Linux / переносимый деплой)
+
+Рекомендуемый способ для прод/пилота на любой Linux-машине. `docker compose`
+поднимает весь стек (PostgreSQL + backend + scheduler + nginx с фронтом),
+применяет миграции и проксирует `/api` на backend — без ручных шагов и без
+Windows-зависимостей.
+
+### Требования
+
+- Docker Engine 24+ и Docker Compose v2 (`docker compose version`).
+- Git с поддержкой `.gitattributes` (репозиторий нормализует переводы строк в
+  LF — shell-entrypoint и `nginx.conf` обязаны быть LF внутри контейнера).
+
+### Состав стека (`docker-compose.yml`)
+
+| Сервис      | Образ / сборка            | Назначение |
+|-------------|---------------------------|------------|
+| `db`        | `postgres:16`             | БД с volume `db_data`, healthcheck `pg_isready` |
+| `backend`   | `Dockerfile`              | FastAPI/uvicorn `:8080`; entrypoint ждёт БД → `alembic upgrade head` → запуск API |
+| `scheduler` | `Dockerfile` (тот же образ)| `python -m app.scheduler` отдельным процессом (иначе EOD-джоб задвоится) |
+| `frontend`  | `frontend/Dockerfile`     | nginx: статика SPA + reverse-proxy `/api` на `backend:8080`, SPA-fallback |
+
+Загруженные файлы хранятся в volume `storage_data` (`/app/storage`),
+`app_settings.json` — в `app_data` (`/app/data`).
+
+### Быстрый старт
+
+```bash
+# 1. Скопировать шаблон окружения и задать СИЛЬНЫЙ SECRET_KEY (>=32 симв.)
+cp .env.docker.example .env.docker
+# сгенерировать ключ: python -c "import secrets; print(secrets.token_urlsafe(64))"
+# вписать его в SECRET_KEY= в .env.docker
+
+# 2. Собрать и поднять стек
+docker compose build
+docker compose up -d
+
+# 3. Первый запуск: засеять RBAC + НСИ + тестовых пользователей (admin1/1234)
+docker compose run --rm -e RUN_SEED=true backend python scripts/seed.py
+```
+
+Те же действия через `make`: `make env` → `make build` → `make up` → `make seed`
+(`make help` — список целей).
+
+После старта:
+
+- Фронтенд: `http://localhost:8080` (логин `admin1` / `1234` после сида).
+- Backend health: `http://localhost:8081/health` → `{"status":"ok"}`.
+- API ходит через тот же origin: `http://localhost:8080/api/v1/...` (nginx-proxy).
+
+Порты хоста настраиваются переменными `FRONTEND_PORT` (по умолчанию 8080) и
+`BACKEND_PORT` (по умолчанию 8081).
+
+### Конфигурация и секреты
+
+Все настройки идут через окружение (`.env.docker`, читается `app/core/config.py`).
+`.env.docker` гитигнорится; коммитится только `.env.docker.example` без секретов.
+Ключевое:
+
+- `SECRET_KEY` — обязателен, >=32 символов, не плейсхолдер (валидатор отвергнёт).
+- `DATABASE_URL` — asyncpg-DSN на сервис `db` (`...@db:5432/...`); креды должны
+  совпадать с `POSTGRES_USER/PASSWORD/DB`.
+- `EVOAI_API_KEY` — пустой = OCR выключен (эндпоинт распознавания вернёт 503).
+- `RUN_SCHEDULER_IN_APP=false` — в Docker планировщик это отдельный сервис.
+- `RUN_MIGRATIONS` / `RUN_SEED` — флаги entrypoint (миграции включены у backend;
+  сид по умолчанию выключен и запускается разово, см. выше).
+
+### Миграции и сид
+
+- Миграции применяются автоматически при старте `backend` (entrypoint →
+  `alembic upgrade head`). `scheduler` миграции не запускает.
+- Сид опционален и идемпотентен — запускается разово как one-off команда
+  (`docker compose run --rm -e RUN_SEED=true backend python scripts/seed.py`),
+  а не на каждом старте прод-контейнера.
+
+### Управление
+
+```bash
+docker compose ps           # статус сервисов
+docker compose logs -f      # логи всех сервисов
+docker compose down         # остановить (данные в volume сохраняются)
+docker compose down -v      # остановить И удалить данные (БД + загрузки)
+```
+
+## Требования (разработка на Windows)
 
 - Windows.
 - Python 3.11+.
@@ -165,6 +251,10 @@ http://192.168.150.14:5173/api/v1/...
 Это важно: в пользовательском frontend runtime не должно быть жестких ссылок на `127.0.0.1:8080` или `localhost:8080`, иначе доступ с другого компьютера сломается.
 
 ## Production / reverse proxy
+
+> В Docker-деплое этот reverse proxy уже реализован: `frontend/nginx.conf` раздаёт
+> статику SPA и проксирует `/api` на `backend:8080` (см. раздел «Запуск в Docker»).
+> Раздел ниже описывает ту же схему для ручной настройки без Docker.
 
 Если frontend будет раздаваться не через Vite dev server, нужно настроить reverse proxy:
 
