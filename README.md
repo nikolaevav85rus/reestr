@@ -89,6 +89,34 @@ docker compose run --rm -e RUN_SEED=true backend python scripts/seed.py
   (`docker compose run --rm -e RUN_SEED=true backend python scripts/seed.py`),
   а не на каждом старте прод-контейнера.
 
+### Перенос существующих данных (опционально)
+
+По умолчанию Docker-стек поднимается с ЧИСТОЙ БД (миграции + опц. демо-сид). Чтобы
+вместо этого перенести данные существующей БД (организации, пользователи, платёжный
+календарь, заявки) и загруженные файлы — например, со старой Windows-инсталляции:
+
+```bash
+# 1. Дамп исходной БД (исходная БД только читается)
+pg_dump -U <user> -h <host> -d <db> \
+  --clean --if-exists --no-owner --no-privileges -f backup_migrate.sql
+
+# 2. Поднять ТОЛЬКО контейнерную БД
+docker compose up -d db
+
+# 3. Восстановить дамп в контейнерную БД
+cat backup_migrate.sql | docker compose exec -T db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+
+# 4. Поднять остальной стек (alembic upgrade head будет no-op — схема уже из дампа)
+docker compose up -d
+
+# 5. Скопировать загруженные файлы в volume и выставить владельца
+docker compose cp ./storage/. backend:/app/storage/
+docker compose exec -u root backend chown -R appuser:appuser /app/storage
+```
+
+В этом случае демо-сид (`scripts/seed.py`) запускать НЕ нужно — реальные данные уже в
+дампе. Файлы `backup_*.sql` гитигнорятся (не коммитьте дамп с данными).
+
 ### Управление
 
 ```bash
