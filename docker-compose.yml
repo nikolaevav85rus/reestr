@@ -83,8 +83,8 @@ services:
       backend:
         condition: service_healthy
     ports:
-      # The app entry point: open http://localhost:8080
-      - "${FRONTEND_PORT:-8080}:80"
+      # The app entry point: open http://localhost:5173 (same port as the dev frontend)
+      - "${FRONTEND_PORT:-5173}:80"
     restart: unless-stopped
 
 volumes:

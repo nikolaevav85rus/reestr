@@ -60,12 +60,12 @@ docker compose run --rm -e RUN_SEED=true backend python scripts/seed.py
 
 После старта:
 
-- Фронтенд: `http://localhost:8080` (логин `admin1` / `1234` после сида).
+- Фронтенд: `http://localhost:5173` (логин `admin1` / `1234` после сида).
 - Backend health: `http://localhost:8081/health` → `{"status":"ok"}`.
-- API ходит через тот же origin: `http://localhost:8080/api/v1/...` (nginx-proxy).
+- API ходит через тот же origin: `http://localhost:5173/api/v1/...` (nginx-proxy).
 
-Порты хоста настраиваются переменными `FRONTEND_PORT` (по умолчанию 8080) и
-`BACKEND_PORT` (по умолчанию 8081).
+Порты хоста настраиваются переменными `FRONTEND_PORT` (по умолчанию 5173, как у
+dev-фронта) и `BACKEND_PORT` (по умолчанию 8081).
 
 ### Конфигурация и секреты
 
